@@ -52,7 +52,7 @@
     "colors": "1.4.0",
     "compression": "*",
     "cors": "^2.8.5",
-    "dateformat": "4.6.3",
+    "dateformat": "5.0.3",
     "express": "4.19.2",
     "express-rate-limit": "^5.5.1",
     "foundation-stratum": "0.0.42",
