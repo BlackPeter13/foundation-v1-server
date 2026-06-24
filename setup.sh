@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – Node.js 14 + npm v7 (manual) + systemd
+# foundation-v1-server setup – Node.js 14 + npm v7 (clean install) + systemd
 # Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
@@ -66,19 +66,25 @@ rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 
 node_version=$(node -v)
 log_info "Node version: $node_version"
-npm_version=$(npm -v)
-log_info "npm version (old, possibly broken): $npm_version"
 
-# ---------- MANUAL npm v7 install (since the installer script grabs v11) ----------
-log_info "Installing npm v7.24.2 manually..."
+# ---------- CLEAN INSTALL npm v7 ----------
+log_info "Removing old npm and installing v7.24.2..."
+# Remove any existing npm and related symlinks
+sudo rm -rf /usr/local/lib/node_modules/npm
+sudo rm -f /usr/local/bin/npm /usr/local/bin/npx
+
+# Download and extract npm v7
 cd /tmp
 curl -L https://registry.npmjs.org/npm/-/npm-7.24.2.tgz -o npm-7.24.2.tgz
-sudo tar -xzf npm-7.24.2.tgz -C /usr/local/lib/node_modules
-# The extracted folder is "package" – rename to "npm"
-sudo mv /usr/local/lib/node_modules/package /usr/local/lib/node_modules/npm
+sudo mkdir -p /usr/local/lib/node_modules/npm
+sudo tar -xzf npm-7.24.2.tgz -C /usr/local/lib/node_modules/npm --strip-components=1
+rm npm-7.24.2.tgz
+
 # Create symlinks
 sudo ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 sudo ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Verify
 npm_version=$(npm -v)
 log_info "npm version (new): $npm_version"
 
