@@ -12,22 +12,19 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      # Make the script executable and run it in CI mode
       - name: Run setup.sh (CI mode)
         run: |
           chmod +x setup.sh
-          export APP_DIR="/tmp/foundation-test"
+          # Use the repository root as the installation directory
+          export APP_DIR="$PWD"
           export SKIP_CLONE=true
           sudo -E bash ./setup.sh
 
-      # Verify that the server started correctly
       - name: Verify server is running
         run: |
-          # Ensure pm2 is in PATH (it's installed globally in /usr/local/bin)
           export PATH="$PATH:/usr/local/bin"
-          # Check that the process is online
           pm2 jlist | grep -q '"status":"online"'
-          echo "Server is running!"
+          echo "✅ Server is running!"
 
       - name: Show PM2 logs (if verification fails)
         if: failure()
