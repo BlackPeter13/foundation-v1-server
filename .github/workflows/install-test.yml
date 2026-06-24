@@ -12,27 +12,25 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install system dependencies (for native modules)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libsodium-dev libboost-system-dev
-
+      # Make the script executable and run it in CI mode
       - name: Run setup.sh (CI mode)
-        # We set SKIP_CLONE=true so the script uses the already-checked-out code.
-        # APP_DIR points to a temporary location, so it does not conflict.
         run: |
+          chmod +x setup.sh
           export APP_DIR="/tmp/foundation-test"
           export SKIP_CLONE=true
-          sudo -E ./setup.sh
-        # The script will install Redis, Node.js, npm, PM2, and start the server.
+          sudo -E bash ./setup.sh
 
+      # Verify that the server started correctly
       - name: Verify server is running
         run: |
-          # PM2 should be available globally; list processes as the runner user.
-          pm2 list | grep -q "foundation-server"
-          # Optionally check that the process is online
+          # Ensure pm2 is in PATH (it's installed globally in /usr/local/bin)
+          export PATH="$PATH:/usr/local/bin"
+          # Check that the process is online
           pm2 jlist | grep -q '"status":"online"'
+          echo "Server is running!"
 
-      - name: Show logs (for debugging if failed)
+      - name: Show PM2 logs (if verification fails)
         if: failure()
-        run: pm2 logs foundation-server --lines 20
+        run: |
+          export PATH="$PATH:/usr/local/bin"
+          pm2 logs foundation-server --lines 20
