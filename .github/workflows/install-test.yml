@@ -15,19 +15,19 @@ jobs:
       - name: Run setup.sh (CI mode)
         run: |
           chmod +x setup.sh
-          # Use the repository root as the installation directory
           export APP_DIR="$PWD"
           export SKIP_CLONE=true
-          sudo -E bash ./setup.sh
+          # Pass PATH explicitly to sudo so it finds the newly installed Node
+          sudo -E env "PATH=$PATH" bash ./setup.sh
 
       - name: Verify server is running
         run: |
-          export PATH="$PATH:/usr/local/bin"
+          export PATH="/usr/local/bin:$PATH"
           pm2 jlist | grep -q '"status":"online"'
           echo "✅ Server is running!"
 
       - name: Show PM2 logs (if verification fails)
         if: failure()
         run: |
-          export PATH="$PATH:/usr/local/bin"
+          export PATH="/usr/local/bin:$PATH"
           pm2 logs foundation-server --lines 20
