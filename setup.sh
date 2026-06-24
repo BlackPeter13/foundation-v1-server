@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – Node.js 14 + systemd (no PM2)
+# foundation-v1-server setup – Node.js 14 + npm v7 (installer) + systemd
 # Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
@@ -29,7 +29,6 @@ if [ -z "${APP_DIR:-}" ]; then
     APP_DIR="$REAL_HOME/Desktop/foundation-v1-server"
 fi
 
-# Ensure PATH includes /usr/local/bin (where Node is installed)
 export PATH="/usr/local/bin:$PATH"
 
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
@@ -68,11 +67,13 @@ rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 node_version=$(node -v)
 log_info "Node version: $node_version"
 npm_version=$(npm -v)
-log_info "npm version (old): $npm_version"
+log_info "npm version (old, possibly broken): $npm_version"
 
-# ---------- UPGRADE npm to v7 (fixes broken npm 6) ----------
-log_info "Upgrading npm to v7 (compatible with Node 14)..."
-sudo env PATH="$PATH" npm install -g npm@7.24.2
+# ---------- UPGRADE npm to v7 using the official installer ----------
+log_info "Upgrading npm to v7 (using official installer)..."
+# The installer script works even when the current npm is broken
+curl -L https://npmjs.org/install.sh | sudo env PATH="$PATH" sh -s -- 7.24.2
+
 npm_version=$(npm -v)
 log_info "npm version (new): $npm_version"
 
@@ -192,7 +193,6 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 WantedBy=multi-user.target
 EOF
 
-# Reload systemd, enable and start the service
 sudo systemctl daemon-reload
 sudo systemctl enable foundation-server
 sudo systemctl start foundation-server
