@@ -10,9 +10,9 @@ REPO_URL="https://github.com/BlackPeter13/foundation-v1-server.git"
 BRANCH="master"
 REDIS_MAXCLIENTS=10000
 REDIS_TCP_KEEPALIVE=60
-NODE_VERSION="18"
+NODE_VERSION="20"   # LTS (latest stable; Node 24 does not exist)
 
-# ---------- Determine the real user (the one who called sudo) ----------
+# ---------- Determine the real user ----------
 if [ -n "${SUDO_USER:-}" ]; then
     REAL_USER="$SUDO_USER"
     REAL_HOME=$(eval echo ~"$REAL_USER")
@@ -21,7 +21,6 @@ else
     REAL_HOME="$HOME"
 fi
 
-# Allow APP_DIR override
 if [ -z "${APP_DIR:-}" ]; then
     APP_DIR="$REAL_HOME/Desktop/foundation-v1-server"
 fi
@@ -30,12 +29,13 @@ log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 log_warn()  { echo -e "\033[1;33m[WARN]\033[0m $1"; }
 log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; exit 1; }
 
-# ---------- Prerequisites ----------
+# ---------- System packages (including native build deps) ----------
 log_info "Updating system packages..."
 sudo apt update && sudo apt upgrade -y
 
 log_info "Installing required system packages..."
-sudo apt install -y git curl wget build-essential tcl
+sudo apt install -y git curl wget build-essential tcl \
+    libsodium-dev libboost-system-dev   # needed for some native modules
 
 # ---------- Node.js ----------
 log_info "Installing Node.js ${NODE_VERSION}..."
@@ -62,7 +62,7 @@ sudo sed -i "s/^tcp-backlog .*/tcp-backlog 511/" "$REDIS_CONF"
 sudo systemctl restart redis-server
 sudo systemctl enable redis-server
 
-# ---------- Clone repository (unless SKIP_CLONE is true) ----------
+# ---------- Clone repository (unless SKIP_CLONE=true) ----------
 if [ "${SKIP_CLONE:-false}" != "true" ]; then
     log_info "Cloning repository into ${APP_DIR}..."
     if [ -d "$APP_DIR" ]; then
@@ -72,7 +72,6 @@ if [ "${SKIP_CLONE:-false}" != "true" ]; then
     sudo -u "$REAL_USER" git clone -b "$BRANCH" "$REPO_URL" "$APP_DIR"
 else
     log_info "Skipping clone (SKIP_CLONE=true) – using existing code at $APP_DIR"
-    # Ensure APP_DIR exists and is not empty
     if [ ! -d "$APP_DIR" ]; then
         log_error "APP_DIR ($APP_DIR) does not exist, but SKIP_CLONE is true. Aborting."
     fi
@@ -93,7 +92,7 @@ else
     log_info "Config already exists, skipping."
 fi
 
-# ---------- Patch database.js ----------
+# ---------- Patch database.js (retry + max listeners) ----------
 PATCH_FILE="$APP_DIR/scripts/main/database.js"
 if [ -f "$PATCH_FILE" ]; then
     log_info "Applying Redis connection optimisation + MaxListeners fix..."
