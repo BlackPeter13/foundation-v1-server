@@ -33,7 +33,7 @@ config.redis.tls = false;
 
 // Server Configuration
 config.server = {};
-config.server.host = '127.0.0.1';
+config.server.host = '0.0.0.0';
 config.server.port = 3001;
 config.server.tls = false;
 
