@@ -17,7 +17,6 @@ jobs:
           chmod +x setup.sh
           export APP_DIR="$PWD"
           export SKIP_CLONE=true
-          # Pass PATH explicitly to sudo so it finds the newly installed Node
           sudo -E env "PATH=$PATH" bash ./setup.sh
 
       - name: Verify server is running
