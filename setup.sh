@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – Node.js 14 with C++14 for native addon (compatible)
+# foundation-v1-server setup – Node.js 14 with npm v7, C++14 for native addon
 # Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
@@ -11,7 +11,7 @@ BRANCH="master"
 REDIS_MAXCLIENTS=10000
 REDIS_TCP_KEEPALIVE=60
 
-# Node.js version (binary tarball) – v14 LTS (the last version that compiles the addon)
+# Node.js version (binary tarball) – v14 LTS (compatible with the addon)
 NODE_VERSION="14.21.3"
 NODE_DISTRO="linux-x64"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
@@ -58,7 +58,7 @@ else
 fi
 
 # ---------- Install Node.js from binary tarball ----------
-log_info "Installing Node.js ${NODE_VERSION} from official binary (required for native addon)..."
+log_info "Installing Node.js ${NODE_VERSION} from official binary..."
 cd /tmp
 wget -q "$NODE_URL"
 sudo tar -xJf "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz" -C /usr/local --strip-components=1
@@ -67,9 +67,16 @@ rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 node_version=$(node -v)
 log_info "Node version: $node_version"
 npm_version=$(npm -v)
-log_info "npm version: $npm_version"
+log_info "npm version (old): $npm_version"
 
-# Install PM2 & nodemon globally
+# ---------- UPGRADE npm to v7 (fixes the broken npm 6) ----------
+log_info "Upgrading npm to v7 (compatible with Node 14)..."
+sudo npm install -g npm@7.24.2
+npm_version=$(npm -v)
+log_info "npm version (new): $npm_version"
+
+# ---------- Install PM2 & nodemon globally ----------
+log_info "Installing PM2 and nodemon globally..."
 sudo npm install -g pm2 nodemon
 
 # ---------- PM2 log rotation ----------
