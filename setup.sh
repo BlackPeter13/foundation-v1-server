@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – Node.js 14 with npm v7, C++14 for native addon
+# foundation-v1-server setup – Node.js 14 + systemd (no PM2)
 # Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
@@ -29,7 +29,7 @@ if [ -z "${APP_DIR:-}" ]; then
     APP_DIR="$REAL_HOME/Desktop/foundation-v1-server"
 fi
 
-# Ensure PATH includes /usr/local/bin (where Node will be installed)
+# Ensure PATH includes /usr/local/bin (where Node is installed)
 export PATH="/usr/local/bin:$PATH"
 
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
@@ -75,25 +75,6 @@ log_info "Upgrading npm to v7 (compatible with Node 14)..."
 sudo env PATH="$PATH" npm install -g npm@7.24.2
 npm_version=$(npm -v)
 log_info "npm version (new): $npm_version"
-
-# ---------- Install PM2 & nodemon globally ----------
-log_info "Installing PM2 and nodemon globally..."
-sudo env PATH="$PATH" npm install -g pm2 nodemon
-
-# Verify PM2 is installed
-if command -v pm2 &> /dev/null; then
-    log_info "PM2 installed successfully: $(pm2 --version)"
-else
-    log_error "PM2 not found after installation. Check PATH."
-fi
-
-# ---------- PM2 log rotation ----------
-log_info "Installing and configuring PM2 log rotation..."
-sudo env PATH="$PATH" pm2 install pm2-logrotate
-sudo env PATH="$PATH" pm2 set pm2-logrotate:max_size 100M
-sudo env PATH="$PATH" pm2 set pm2-logrotate:retain 7
-sudo env PATH="$PATH" pm2 set pm2-logrotate:compress true
-sudo env PATH="$PATH" pm2 set pm2-logrotate:dateFormat "YYYY-MM-DD_HH-mm-ss"
 
 # ---------- Redis ----------
 log_info "Installing Redis..."
@@ -185,12 +166,38 @@ else
     log_warn "database.js not found; skipping patch."
 fi
 
-# ---------- Start with PM2 ----------
-log_info "Starting server with PM2..."
-cd "$APP_DIR"
-sudo -u "$REAL_USER" env PATH="$PATH" pm2 start scripts/main.js --name foundation-server
-sudo -u "$REAL_USER" env PATH="$PATH" pm2 save
-sudo env PATH="$PATH:/usr/bin" pm2 startup systemd -u "$REAL_USER" --hp "$REAL_HOME" || true
+# ---------- Create systemd service ----------
+log_info "Creating systemd service for Foundation pool..."
+
+SERVICE_FILE="/etc/systemd/system/foundation-server.service"
+sudo tee "$SERVICE_FILE" > /dev/null <<EOF
+[Unit]
+Description=Foundation Mining Pool
+After=network.target redis-server.service
+Wants=redis-server.service
+
+[Service]
+Type=simple
+User=$REAL_USER
+WorkingDirectory=$APP_DIR
+ExecStart=/usr/local/bin/node $APP_DIR/scripts/main.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Reload systemd, enable and start the service
+sudo systemctl daemon-reload
+sudo systemctl enable foundation-server
+sudo systemctl start foundation-server
+
+log_info "Systemd service started successfully."
 
 log_info "Setup complete!"
 log_info "--------------------------------------------------"
@@ -201,8 +208,8 @@ log_info ""
 log_info "Next steps:"
 log_info "1. To set up main config, copy example.js to config.js and edit it."
 log_info "2. Add pool configs (JSON/JS) to $APP_DIR/configs/pools/"
-log_info "3. Restart after changes: pm2 restart foundation-server"
-log_info "4. View logs: pm2 logs foundation-server"
+log_info "3. Restart after changes: sudo systemctl restart foundation-server"
+log_info "4. View logs: sudo journalctl -u foundation-server -f"
 log_info "5. Swap file (16GB) is active."
-log_info "6. Redis tuned for performance; PM2 logs rotate at 100MB, keep 7 files."
+log_info "6. Redis tuned for performance."
 log_info "--------------------------------------------------"
