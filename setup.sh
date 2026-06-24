@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – compatible with Node.js 14
+# foundation-v1-server setup – compatible with Node.js 16
 # Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
@@ -10,7 +10,7 @@ REPO_URL="https://github.com/BlackPeter13/foundation-v1-server.git"
 BRANCH="master"
 REDIS_MAXCLIENTS=10000
 REDIS_TCP_KEEPALIVE=60
-NODE_VERSION="14"   # Last known working version for native addon
+NODE_VERSION="16"   # Supported on Ubuntu 22.04, likely compatible with native addon
 
 # ---------- Determine the real user ----------
 if [ -n "${SUDO_USER:-}" ]; then
@@ -40,17 +40,17 @@ log_info "Installing required system packages..."
 sudo apt install -y git curl wget build-essential tcl \
     libsodium-dev libboost-system-dev
 
-# ---------- Node.js 14 (manual NodeSource setup) ----------
+# ---------- Node.js 16 (manual NodeSource setup) ----------
 log_info "Installing Node.js ${NODE_VERSION} (required for native addon)..."
 
 # 1. Import the NodeSource GPG key
 log_info "Adding NodeSource GPG key..."
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
 
-# 2. Add the NodeSource repository for Node.js 14 (Jammy)
-log_info "Adding NodeSource repository for Node.js 14..."
-echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_14.x jammy main" | sudo tee /etc/apt/sources.list.d/nodesource.list
-echo "deb-src [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_14.x jammy main" | sudo tee -a /etc/apt/sources.list.d/nodesource.list
+# 2. Add the NodeSource repository for Node.js 16 (Jammy)
+log_info "Adding NodeSource repository for Node.js 16..."
+echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_VERSION}.x jammy main" | sudo tee /etc/apt/sources.list.d/nodesource.list
+echo "deb-src [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_VERSION}.x jammy main" | sudo tee -a /etc/apt/sources.list.d/nodesource.list
 
 # 3. Update and install Node.js
 sudo apt update
