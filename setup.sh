@@ -1,16 +1,16 @@
 #!/bin/bash
-# foundation-v1-server setup – installs to ~/Desktop (or $APP_DIR if set)
+# foundation-v1-server setup – compatible with Node.js 14
 # Run with: sudo ./setup.sh
-# For CI: set SKIP_CLONE=true and APP_DIR=/tmp/foundation-test
+# For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
 set -euo pipefail
 
-# ---------- Configuration (can be overridden by env) ----------
+# ---------- Configuration ----------
 REPO_URL="https://github.com/BlackPeter13/foundation-v1-server.git"
 BRANCH="master"
 REDIS_MAXCLIENTS=10000
 REDIS_TCP_KEEPALIVE=60
-NODE_VERSION="20"   # LTS (latest stable; Node 24 does not exist)
+NODE_VERSION="14"   # Last known working version for native addon
 
 # ---------- Determine the real user ----------
 if [ -n "${SUDO_USER:-}" ]; then
@@ -25,6 +25,9 @@ if [ -z "${APP_DIR:-}" ]; then
     APP_DIR="$REAL_HOME/Desktop/foundation-v1-server"
 fi
 
+# Ensure PATH includes /usr/local/bin (where Node is installed)
+export PATH="/usr/local/bin:$PATH"
+
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 log_warn()  { echo -e "\033[1;33m[WARN]\033[0m $1"; }
 log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; exit 1; }
@@ -35,12 +38,17 @@ sudo apt update && sudo apt upgrade -y
 
 log_info "Installing required system packages..."
 sudo apt install -y git curl wget build-essential tcl \
-    libsodium-dev libboost-system-dev   # needed for some native modules
+    libsodium-dev libboost-system-dev
 
-# ---------- Node.js ----------
-log_info "Installing Node.js ${NODE_VERSION}..."
+# ---------- Node.js 14 ----------
+log_info "Installing Node.js ${NODE_VERSION} (required for native addon)..."
 curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | sudo -E bash -
 sudo apt install -y nodejs
+# Verify Node version
+node_version=$(node -v)
+log_info "Node version: $node_version"
+
+# Install PM2 & nodemon globally with the correct Node
 sudo npm install -g pm2 nodemon
 
 # ---------- Redis ----------
@@ -77,10 +85,11 @@ else
     fi
 fi
 
-# ---------- Install dependencies ----------
+# ---------- Install dependencies (with explicit PATH for npm) ----------
 log_info "Installing npm dependencies..."
 cd "$APP_DIR"
-sudo -u "$REAL_USER" npm install --production
+# Pass PATH so that the correct node/npm are used
+sudo -u "$REAL_USER" env PATH="$PATH" npm install --production
 
 # ---------- Create config ----------
 CONFIG_DIR="$APP_DIR/configs/main"
@@ -129,11 +138,11 @@ else
     log_warn "database.js not found; skipping patch."
 fi
 
-# ---------- Start with PM2 ----------
+# ---------- Start with PM2 (pass PATH) ----------
 log_info "Starting server with PM2..."
 cd "$APP_DIR"
-sudo -u "$REAL_USER" pm2 start scripts/main.js --name foundation-server
-sudo -u "$REAL_USER" pm2 save
+sudo -u "$REAL_USER" env PATH="$PATH" pm2 start scripts/main.js --name foundation-server
+sudo -u "$REAL_USER" env PATH="$PATH" pm2 save
 sudo env PATH="$PATH:/usr/bin" pm2 startup systemd -u "$REAL_USER" --hp "$REAL_HOME" || true
 
 log_info "Setup complete!"
