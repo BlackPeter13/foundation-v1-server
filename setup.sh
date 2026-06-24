@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – Node.js from official binary (no repo issues)
+# foundation-v1-server setup – Node.js 18 with C++14 for native addon
 # Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
@@ -11,8 +11,8 @@ BRANCH="master"
 REDIS_MAXCLIENTS=10000
 REDIS_TCP_KEEPALIVE=60
 
-# Node.js version (binary tarball)
-NODE_VERSION="16.20.2"   # Latest v16 LTS
+# Node.js version (binary tarball) – use v18 LTS
+NODE_VERSION="18.20.8"   # Latest v18 LTS as of now
 NODE_DISTRO="linux-x64"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 
@@ -94,10 +94,13 @@ else
     fi
 fi
 
-# ---------- Install dependencies (with explicit PATH for npm) ----------
-log_info "Installing npm dependencies..."
+# ---------- Install dependencies with C++14 flag ----------
+log_info "Installing npm dependencies (forcing C++14 for native addon)..."
 cd "$APP_DIR"
-sudo -u "$REAL_USER" env PATH="$PATH" npm install --production
+
+# Force C++14 to ensure std::remove_cv_t and other features are available
+export CXXFLAGS="-std=c++14"
+sudo -u "$REAL_USER" env PATH="$PATH" CXXFLAGS="$CXXFLAGS" npm install --production
 
 # ---------- Create config ----------
 CONFIG_DIR="$APP_DIR/configs/main"
