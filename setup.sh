@@ -29,6 +29,7 @@ if [ -z "${APP_DIR:-}" ]; then
     APP_DIR="$REAL_HOME/Desktop/foundation-v1-server"
 fi
 
+# Ensure PATH includes /usr/local/bin (where Node will be installed)
 export PATH="/usr/local/bin:$PATH"
 
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
@@ -69,23 +70,30 @@ log_info "Node version: $node_version"
 npm_version=$(npm -v)
 log_info "npm version (old): $npm_version"
 
-# ---------- UPGRADE npm to v7 (fixes the broken npm 6) ----------
+# ---------- UPGRADE npm to v7 (fixes broken npm 6) ----------
 log_info "Upgrading npm to v7 (compatible with Node 14)..."
-sudo npm install -g npm@7.24.2
+sudo env PATH="$PATH" npm install -g npm@7.24.2
 npm_version=$(npm -v)
 log_info "npm version (new): $npm_version"
 
 # ---------- Install PM2 & nodemon globally ----------
 log_info "Installing PM2 and nodemon globally..."
-sudo npm install -g pm2 nodemon
+sudo env PATH="$PATH" npm install -g pm2 nodemon
+
+# Verify PM2 is installed
+if command -v pm2 &> /dev/null; then
+    log_info "PM2 installed successfully: $(pm2 --version)"
+else
+    log_error "PM2 not found after installation. Check PATH."
+fi
 
 # ---------- PM2 log rotation ----------
 log_info "Installing and configuring PM2 log rotation..."
-sudo pm2 install pm2-logrotate
-sudo pm2 set pm2-logrotate:max_size 100M
-sudo pm2 set pm2-logrotate:retain 7
-sudo pm2 set pm2-logrotate:compress true
-sudo pm2 set pm2-logrotate:dateFormat "YYYY-MM-DD_HH-mm-ss"
+sudo env PATH="$PATH" pm2 install pm2-logrotate
+sudo env PATH="$PATH" pm2 set pm2-logrotate:max_size 100M
+sudo env PATH="$PATH" pm2 set pm2-logrotate:retain 7
+sudo env PATH="$PATH" pm2 set pm2-logrotate:compress true
+sudo env PATH="$PATH" pm2 set pm2-logrotate:dateFormat "YYYY-MM-DD_HH-mm-ss"
 
 # ---------- Redis ----------
 log_info "Installing Redis..."
