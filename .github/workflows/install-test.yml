@@ -22,7 +22,6 @@ jobs:
 
       - name: Verify server is running (systemd)
         run: |
-          # Check service status
           sudo systemctl status foundation-server --no-pager
           if systemctl is-active --quiet foundation-server; then
             echo "✅ Server is running successfully!"
