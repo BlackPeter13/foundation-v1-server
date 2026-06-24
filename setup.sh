@@ -32,7 +32,7 @@ log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 log_warn()  { echo -e "\033[1;33m[WARN]\033[0m $1"; }
 log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; exit 1; }
 
-# ---------- System packages (including native build deps) ----------
+# ---------- System packages ----------
 log_info "Updating system packages..."
 sudo apt update && sudo apt upgrade -y
 
@@ -40,15 +40,27 @@ log_info "Installing required system packages..."
 sudo apt install -y git curl wget build-essential tcl \
     libsodium-dev libboost-system-dev
 
-# ---------- Node.js 14 ----------
+# ---------- Node.js 14 (manual NodeSource setup) ----------
 log_info "Installing Node.js ${NODE_VERSION} (required for native addon)..."
-curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | sudo -E bash -
+
+# 1. Import the NodeSource GPG key
+log_info "Adding NodeSource GPG key..."
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+
+# 2. Add the NodeSource repository for Node.js 14 (Jammy)
+log_info "Adding NodeSource repository for Node.js 14..."
+echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_14.x jammy main" | sudo tee /etc/apt/sources.list.d/nodesource.list
+echo "deb-src [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_14.x jammy main" | sudo tee -a /etc/apt/sources.list.d/nodesource.list
+
+# 3. Update and install Node.js
+sudo apt update
 sudo apt install -y nodejs
+
 # Verify Node version
 node_version=$(node -v)
 log_info "Node version: $node_version"
 
-# Install PM2 & nodemon globally with the correct Node
+# Install PM2 & nodemon globally
 sudo npm install -g pm2 nodemon
 
 # ---------- Redis ----------
@@ -88,7 +100,6 @@ fi
 # ---------- Install dependencies (with explicit PATH for npm) ----------
 log_info "Installing npm dependencies..."
 cd "$APP_DIR"
-# Pass PATH so that the correct node/npm are used
 sudo -u "$REAL_USER" env PATH="$PATH" npm install --production
 
 # ---------- Create config ----------
