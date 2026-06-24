@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – Node.js 18 with C++14 for native addon
+# foundation-v1-server setup – Node.js 18 with C++14, 16GB swap, tuned Redis, PM2 log rotation
 # Works on Ubuntu 20.04, 22.04, and any other recent Debian-based distro.
 # Run with: sudo ./setup1.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
@@ -45,6 +45,20 @@ log_info "Installing required system packages..."
 sudo apt install -y git curl wget build-essential tcl \
     libsodium-dev libboost-system-dev xz-utils
 
+# ---------- Create 16GB swap file if none exists ----------
+log_info "Checking for existing swap..."
+if swapon --show | grep -q "^/swapfile"; then
+    log_info "Swap already exists, skipping."
+else
+    log_info "Creating 16GB swap file..."
+    sudo fallocate -l 16G /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+    log_info "Swap enabled."
+fi
+
 # ---------- Install Node.js from binary tarball ----------
 log_info "Installing Node.js ${NODE_VERSION} from official binary..."
 cd /tmp
@@ -52,7 +66,6 @@ wget -q "$NODE_URL"
 sudo tar -xJf "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz" -C /usr/local --strip-components=1
 rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 
-# Verify installation
 node_version=$(node -v)
 log_info "Node version: $node_version"
 npm_version=$(npm -v)
@@ -60,6 +73,14 @@ log_info "npm version: $npm_version"
 
 # Install PM2 & nodemon globally
 sudo npm install -g pm2 nodemon
+
+# ---------- Install PM2 log rotation ----------
+log_info "Installing and configuring PM2 log rotation..."
+sudo pm2 install pm2-logrotate
+sudo pm2 set pm2-logrotate:max_size 100M
+sudo pm2 set pm2-logrotate:retain 7
+sudo pm2 set pm2-logrotate:compress true
+sudo pm2 set pm2-logrotate:dateFormat "YYYY-MM-DD_HH-mm-ss"
 
 # ---------- Redis ----------
 log_info "Installing Redis..."
@@ -69,6 +90,7 @@ log_info "Optimising Redis system configuration..."
 REDIS_CONF="/etc/redis/redis.conf"
 sudo cp "$REDIS_CONF" "$REDIS_CONF.bak"
 
+# Existing tunings
 sudo sed -i "s/^# maxclients .*/maxclients ${REDIS_MAXCLIENTS}/" "$REDIS_CONF"
 sudo sed -i "s/^maxclients .*/maxclients ${REDIS_MAXCLIENTS}/" "$REDIS_CONF"
 sudo sed -i "s/^# tcp-keepalive .*/tcp-keepalive ${REDIS_TCP_KEEPALIVE}/" "$REDIS_CONF"
@@ -76,6 +98,14 @@ sudo sed -i "s/^tcp-keepalive .*/tcp-keepalive ${REDIS_TCP_KEEPALIVE}/" "$REDIS_
 sudo sed -i "s/^timeout .*/timeout 0/" "$REDIS_CONF"
 sudo sed -i "s/^# tcp-backlog .*/tcp-backlog 511/" "$REDIS_CONF"
 sudo sed -i "s/^tcp-backlog .*/tcp-backlog 511/" "$REDIS_CONF"
+
+# Additional performance/eviction settings
+sudo sed -i "s/^# save .*/save \"\"/" "$REDIS_CONF"        # disable RDB snapshots (optional)
+sudo sed -i "s/^appendonly .*/appendonly no/" "$REDIS_CONF"
+sudo sed -i "s/^# maxmemory .*/maxmemory 2gb/" "$REDIS_CONF"
+sudo sed -i "s/^# maxmemory-policy .*/maxmemory-policy allkeys-lru/" "$REDIS_CONF"
+sudo sed -i "s/^# client-output-buffer-limit normal .*/client-output-buffer-limit normal 0 0 0/" "$REDIS_CONF"
+sudo sed -i "s/^# client-output-buffer-limit pubsub .*/client-output-buffer-limit pubsub 32mb 8mb 60/" "$REDIS_CONF"
 
 sudo systemctl restart redis-server
 sudo systemctl enable redis-server
@@ -98,19 +128,16 @@ fi
 # ---------- Install dependencies with C++14 flag ----------
 log_info "Installing npm dependencies (forcing C++14 for native addon)..."
 cd "$APP_DIR"
-
-# Force C++14 to ensure std::remove_cv_t and other features are available
 export CXXFLAGS="-std=c++14"
 sudo -u "$REAL_USER" env PATH="$PATH" CXXFLAGS="$CXXFLAGS" npm install --production
 
-# ---------- Create config ----------
+# ---------- Configuration handling (DO NOT copy example.js) ----------
 CONFIG_DIR="$APP_DIR/configs/main"
-if [ ! -f "$CONFIG_DIR/config.js" ]; then
-    log_info "Copying example config to config.js..."
-    sudo -u "$REAL_USER" cp "$CONFIG_DIR/example.js" "$CONFIG_DIR/config.js"
-    log_warn "Default config created at $CONFIG_DIR/config.js – please edit it."
+if [ -f "$CONFIG_DIR/example.js" ]; then
+    log_info "Example config available at $CONFIG_DIR/example.js – copy it manually if needed."
+    log_info "Pool configs are loaded from $APP_DIR/configs/pools/ – add your coin JSON/JS files there."
 else
-    log_info "Config already exists, skipping."
+    log_warn "No example.js found – ensure you have a valid config structure."
 fi
 
 # ---------- Patch database.js (retry + max listeners) ----------
@@ -120,7 +147,6 @@ if [ -f "$PATCH_FILE" ]; then
 
     sudo -u "$REAL_USER" cp "$PATCH_FILE" "$PATCH_FILE.bak"
 
-    # Insert retry_strategy and socket_keepalive
     sudo -u "$REAL_USER" sed -i '/return redis\.createClient(connectionOptions);/i \
         // --- Optimised Redis connection settings ---\
         connectionOptions.retry_strategy = function(options) {\
@@ -142,7 +168,6 @@ if [ -f "$PATCH_FILE" ]; then
         connectionOptions.socket_keepalive_initial_delay = 30000;\
         // --- End optimised settings ---' "$PATCH_FILE"
 
-    # Replace return line with setMaxListeners(0)
     sudo -u "$REAL_USER" sed -i 's/^\(\s*\)return redis\.createClient(connectionOptions);/\1const client = redis.createClient(connectionOptions);\n\1client.setMaxListeners(0);\n\1return client;/' "$PATCH_FILE"
 
     log_info "Patch applied successfully."
@@ -160,12 +185,14 @@ sudo env PATH="$PATH:/usr/bin" pm2 startup systemd -u "$REAL_USER" --hp "$REAL_H
 log_info "Setup complete!"
 log_info "--------------------------------------------------"
 log_info "Installation directory: $APP_DIR"
-log_info "Main config:           $CONFIG_DIR/config.js"
-log_info "Pool configs:          $APP_DIR/configs/pools/"
+log_info "Main config template:   $CONFIG_DIR/example.js (copy manually if needed)"
+log_info "Pool configs go in:     $APP_DIR/configs/pools/"
 log_info ""
 log_info "Next steps:"
-log_info "1. Edit $CONFIG_DIR/config.js (Redis host/port/password)."
-log_info "2. Place TLS certificates in $APP_DIR/certificates/ if needed."
-log_info "3. Restart after config changes: pm2 restart foundation-server"
+log_info "1. To set up main config, copy example.js to config.js and edit it."
+log_info "2. Add pool configs (JSON/JS) to $APP_DIR/configs/pools/"
+log_info "3. Restart after changes: pm2 restart foundation-server"
 log_info "4. View logs: pm2 logs foundation-server"
+log_info "5. Swap file (16GB) is active."
+log_info "6. Redis tuned for performance; PM2 logs rotate at 100MB, keep 7 files."
 log_info "--------------------------------------------------"
