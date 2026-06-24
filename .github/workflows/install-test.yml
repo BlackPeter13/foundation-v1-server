@@ -10,23 +10,31 @@ jobs:
   install-test:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Run setup.sh (CI mode)
         run: |
           chmod +x setup.sh
           export APP_DIR="$PWD"
           export SKIP_CLONE=true
-          sudo -E env "PATH=$PATH" bash ./setup.sh
+          sudo -E bash ./setup.sh
 
-      - name: Verify server is running
+      - name: Verify server is running (systemd)
         run: |
-          export PATH="/usr/local/bin:$PATH"
-          pm2 jlist | grep -q '"status":"online"'
-          echo "✅ Server is running!"
+          # Check service status
+          sudo systemctl status foundation-server --no-pager
+          if systemctl is-active --quiet foundation-server; then
+            echo "✅ Server is running successfully!"
+          else
+            echo "❌ Server is not running"
+            exit 1
+          fi
 
-      - name: Show PM2 logs (if verification fails)
+      - name: Show service logs (if verification fails)
         if: failure()
         run: |
-          export PATH="/usr/local/bin:$PATH"
-          pm2 logs foundation-server --lines 20
+          echo "=== Service status ==="
+          sudo systemctl status foundation-server --no-pager
+          echo "=== Last 50 log lines ==="
+          sudo journalctl -u foundation-server -n 50 --no-pager
