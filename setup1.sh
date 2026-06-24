@@ -1,7 +1,6 @@
 #!/bin/bash
-# foundation-v1-server setup – Node.js 18 with C++14, 16GB swap, tuned Redis, PM2 log rotation
-# Works on Ubuntu 20.04, 22.04, and any other recent Debian-based distro.
-# Run with: sudo ./setup1.sh
+# foundation-v1-server setup – Node.js 14 with C++14 for native addon (compatible)
+# Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
 set -euo pipefail
@@ -12,8 +11,8 @@ BRANCH="master"
 REDIS_MAXCLIENTS=10000
 REDIS_TCP_KEEPALIVE=60
 
-# Node.js version (binary tarball) – v18 LTS
-NODE_VERSION="18.20.8"
+# Node.js version (binary tarball) – v14 LTS (the last version that compiles the addon)
+NODE_VERSION="14.21.3"
 NODE_DISTRO="linux-x64"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 
@@ -30,7 +29,6 @@ if [ -z "${APP_DIR:-}" ]; then
     APP_DIR="$REAL_HOME/Desktop/foundation-v1-server"
 fi
 
-# Ensure PATH includes /usr/local/bin (where Node will be installed)
 export PATH="/usr/local/bin:$PATH"
 
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
@@ -45,7 +43,7 @@ log_info "Installing required system packages..."
 sudo apt install -y git curl wget build-essential tcl \
     libsodium-dev libboost-system-dev xz-utils
 
-# ---------- Create 16GB swap file if none exists ----------
+# ---------- Create 16GB swap file ----------
 log_info "Checking for existing swap..."
 if swapon --show | grep -q "^/swapfile"; then
     log_info "Swap already exists, skipping."
@@ -60,7 +58,7 @@ else
 fi
 
 # ---------- Install Node.js from binary tarball ----------
-log_info "Installing Node.js ${NODE_VERSION} from official binary..."
+log_info "Installing Node.js ${NODE_VERSION} from official binary (required for native addon)..."
 cd /tmp
 wget -q "$NODE_URL"
 sudo tar -xJf "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz" -C /usr/local --strip-components=1
@@ -74,7 +72,7 @@ log_info "npm version: $npm_version"
 # Install PM2 & nodemon globally
 sudo npm install -g pm2 nodemon
 
-# ---------- Install PM2 log rotation ----------
+# ---------- PM2 log rotation ----------
 log_info "Installing and configuring PM2 log rotation..."
 sudo pm2 install pm2-logrotate
 sudo pm2 set pm2-logrotate:max_size 100M
@@ -90,7 +88,6 @@ log_info "Optimising Redis system configuration..."
 REDIS_CONF="/etc/redis/redis.conf"
 sudo cp "$REDIS_CONF" "$REDIS_CONF.bak"
 
-# Existing tunings
 sudo sed -i "s/^# maxclients .*/maxclients ${REDIS_MAXCLIENTS}/" "$REDIS_CONF"
 sudo sed -i "s/^maxclients .*/maxclients ${REDIS_MAXCLIENTS}/" "$REDIS_CONF"
 sudo sed -i "s/^# tcp-keepalive .*/tcp-keepalive ${REDIS_TCP_KEEPALIVE}/" "$REDIS_CONF"
@@ -98,9 +95,7 @@ sudo sed -i "s/^tcp-keepalive .*/tcp-keepalive ${REDIS_TCP_KEEPALIVE}/" "$REDIS_
 sudo sed -i "s/^timeout .*/timeout 0/" "$REDIS_CONF"
 sudo sed -i "s/^# tcp-backlog .*/tcp-backlog 511/" "$REDIS_CONF"
 sudo sed -i "s/^tcp-backlog .*/tcp-backlog 511/" "$REDIS_CONF"
-
-# Additional performance/eviction settings
-sudo sed -i "s/^# save .*/save \"\"/" "$REDIS_CONF"        # disable RDB snapshots (optional)
+sudo sed -i "s/^# save .*/save \"\"/" "$REDIS_CONF"
 sudo sed -i "s/^appendonly .*/appendonly no/" "$REDIS_CONF"
 sudo sed -i "s/^# maxmemory .*/maxmemory 2gb/" "$REDIS_CONF"
 sudo sed -i "s/^# maxmemory-policy .*/maxmemory-policy allkeys-lru/" "$REDIS_CONF"
@@ -175,7 +170,7 @@ else
     log_warn "database.js not found; skipping patch."
 fi
 
-# ---------- Start with PM2 (pass PATH) ----------
+# ---------- Start with PM2 ----------
 log_info "Starting server with PM2..."
 cd "$APP_DIR"
 sudo -u "$REAL_USER" env PATH="$PATH" pm2 start scripts/main.js --name foundation-server
