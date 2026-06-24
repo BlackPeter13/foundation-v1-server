@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – compatible with Node.js 16
+# foundation-v1-server setup – Node.js from official binary (no repo issues)
 # Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
@@ -10,7 +10,11 @@ REPO_URL="https://github.com/BlackPeter13/foundation-v1-server.git"
 BRANCH="master"
 REDIS_MAXCLIENTS=10000
 REDIS_TCP_KEEPALIVE=60
-NODE_VERSION="16"   # Supported on Ubuntu 22.04, likely compatible with native addon
+
+# Node.js version (binary tarball)
+NODE_VERSION="16.20.2"   # Latest v16 LTS
+NODE_DISTRO="linux-x64"
+NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 
 # ---------- Determine the real user ----------
 if [ -n "${SUDO_USER:-}" ]; then
@@ -25,7 +29,7 @@ if [ -z "${APP_DIR:-}" ]; then
     APP_DIR="$REAL_HOME/Desktop/foundation-v1-server"
 fi
 
-# Ensure PATH includes /usr/local/bin (where Node is installed)
+# Ensure PATH includes /usr/local/bin (where Node will be installed)
 export PATH="/usr/local/bin:$PATH"
 
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
@@ -38,27 +42,20 @@ sudo apt update && sudo apt upgrade -y
 
 log_info "Installing required system packages..."
 sudo apt install -y git curl wget build-essential tcl \
-    libsodium-dev libboost-system-dev
+    libsodium-dev libboost-system-dev xz-utils
 
-# ---------- Node.js 16 (manual NodeSource setup) ----------
-log_info "Installing Node.js ${NODE_VERSION} (required for native addon)..."
+# ---------- Install Node.js from binary tarball ----------
+log_info "Installing Node.js ${NODE_VERSION} from official binary..."
+cd /tmp
+wget -q "$NODE_URL"
+sudo tar -xJf "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz" -C /usr/local --strip-components=1
+rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 
-# 1. Import the NodeSource GPG key
-log_info "Adding NodeSource GPG key..."
-curl -fsSL https://deb.nodesource.com/gpgkey/nodesource.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
-
-# 2. Add the NodeSource repository for Node.js 16 (Jammy)
-log_info "Adding NodeSource repository for Node.js 16..."
-echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_VERSION}.x jammy main" | sudo tee /etc/apt/sources.list.d/nodesource.list
-echo "deb-src [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_VERSION}.x jammy main" | sudo tee -a /etc/apt/sources.list.d/nodesource.list
-
-# 3. Update and install Node.js
-sudo apt update
-sudo apt install -y nodejs
-
-# Verify Node version
+# Verify installation
 node_version=$(node -v)
 log_info "Node version: $node_version"
+npm_version=$(npm -v)
+log_info "npm version: $npm_version"
 
 # Install PM2 & nodemon globally
 sudo npm install -g pm2 nodemon
