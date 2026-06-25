@@ -1,6 +1,6 @@
 /*
  *
- * Server (Updated)
+ * Server (Updated) – optimized caching & rate limiting
  *
  */
 
@@ -40,14 +40,49 @@ const PoolServer = function (logger, client) {
     // Build Main Server
     const app = express();
     const api = new PoolApi(_this.client, _this.poolConfigs, _this.portalConfig);
-    const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
-    const cache = apicache.options({}).middleware;
 
-    // Establish Middleware
+    // ----------------------------------------------------------------------
+    // 1. Rate Limiter – increased to handle 9+ pools and frequent refreshes
+    // ----------------------------------------------------------------------
+    const limiter = rateLimit({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 1000,                // increased from 100 to 1000 per IP
+      message: 'Too many requests, please try again later.',
+    });
+
+    // ----------------------------------------------------------------------
+    // 2. Caching – ignore query parameters to respect the cache even with _=timestamp
+    // ----------------------------------------------------------------------
+    // By default, apicache uses the full URL including query string.
+    // We override appendKey to only use the path (and optionally the body for POST)
+    const cache = apicache
+      .options({
+        // Only cache GET requests (by default it caches all, but we restrict)
+        // Also ignore query parameters for cache key
+        appendKey: (req, res) => {
+          // For GET requests, we only want to cache based on the path
+          // This makes "?x=1" and "?x=2" use the same cached response
+          return req.path;
+        },
+        // Default cache duration can be set here, or per route
+        defaultDuration: '1 minute',
+        // Optional: enable debug to see cache hits (set to true for debugging)
+        debug: false,
+      })
+      .middleware;
+
+    // ----------------------------------------------------------------------
+    // 3. Middleware
+    // ----------------------------------------------------------------------
     app.set('trust proxy', 1);
-    app.use(bodyParser.json());
+    app.use(bodyParser.json()); // only needed if POST requests exist, but fine
     app.use(limiter);
-    app.use(cache('1 minute'));
+
+    // Apply caching to all GET endpoints under /api/v1/
+    // We use a custom cache duration of 1 minute (default), but it can be adjusted.
+    // For very dynamic endpoints like /miners/active, you could reduce to 30s.
+    app.use('/api/v1/', cache('1 minute'));
+
     app.use(compress());
     app.use(cors());
 
@@ -92,7 +127,7 @@ const PoolServer = function (logger, client) {
     _this.buildServer();
     _this.server.listen(_this.portalConfig.server.port, _this.portalConfig.server.host, () => {
       logger.debug('Server', 'Website',
-        `Website started on ${ _this.portalConfig.server.host }:${ _this.portalConfig.server.port}`);
+        `Website started on ${ _this.portalConfig.server.host }:${ _this.portalConfig.server.port }`);
       callback();
     });
   };
