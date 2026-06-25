@@ -37,3 +37,6 @@ jobs:
           sudo systemctl status foundation-server --no-pager
           echo "=== Last 50 log lines ==="
           sudo journalctl -u foundation-server -n 50 --no-pager
+
+          - name: Attest Build Provenance
+  uses: actions/attest-build-provenance@v4.1.0
