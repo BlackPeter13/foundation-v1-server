@@ -1,6 +1,6 @@
 /*
  *
- * Statistics (Updated)
+ * Statistics (Updated) – with SCAN‑based iteration
  *
  */
 
@@ -36,15 +36,61 @@ const PoolStatistics = function (logger, client, poolConfig, portalConfig) {
   _this.hashrateWindow = _this.poolConfig.statistics.hashrateWindow || 300;
   _this.historicalWindow = _this.poolConfig.statistics.historicalWindow || 86400;
 
-  // Calculate Historical Information
-  this.calculateHistoricalInfo = function(results, blockType) {
+  // ====================== SCAN‑BASED HELPERS ======================
 
+  // Non‑blocking scan over a set (returns all members as array)
+  function scanSetAsync(key, pattern = '*', count = 100) {
+    return new Promise((resolve, reject) => {
+      const stream = client.sscanStream(key, { match: pattern, count });
+      const members = [];
+      stream.on('data', (chunk) => { members.push(...chunk); });
+      stream.on('end', () => { resolve(members); });
+      stream.on('error', reject);
+    });
+  }
+
+  // Non‑blocking scan over a sorted set (returns all members with scores as array of [member, score])
+  function scanZSetAsync(key, count = 100) {
+    return new Promise((resolve, reject) => {
+      const stream = client.zscanStream(key, { count });
+      const items = [];
+      stream.on('data', (chunk) => {
+        // chunk is [member1, score1, member2, score2, ...]
+        for (let i = 0; i < chunk.length; i += 2) {
+          items.push({ member: chunk[i], score: chunk[i+1] });
+        }
+      });
+      stream.on('end', () => { resolve(items); });
+      stream.on('error', reject);
+    });
+  }
+
+  // Batch delete helper (splits array into chunks of 1000)
+  function batchDelete(commands, key, items, fieldExtractor) {
+    const batchSize = 1000;
+    for (let i = 0; i < items.length; i += batchSize) {
+      const batch = items.slice(i, i + batchSize);
+      if (fieldExtractor) {
+        // For sets: srem key member1 member2 ...
+        const args = [key, ...batch.map(fieldExtractor)];
+        commands.push(['srem', ...args]);
+      } else {
+        // For sorted sets: zrem key member1 member2 ...
+        const args = [key, ...batch.map(item => item.member)];
+        commands.push(['zrem', ...args]);
+      }
+    }
+  }
+
+  // ====================== ORIGINAL FUNCTIONS (modified) ======================
+
+  // Calculate Historical Information (unchanged)
+  this.calculateHistoricalInfo = function(results, blockType) {
     const commands = [];
     const dateNow = Date.now();
     const algorithm = _this.poolConfig.primary.coin.algorithms.mining;
     const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
 
-    // Build Historical Output
     const output = {
       time: dateNow,
       hashrate: {
@@ -61,28 +107,48 @@ const PoolStatistics = function (logger, client, poolConfig, portalConfig) {
       },
     };
 
-    // Handle Historical Updates
     commands.push(['zadd', `${ _this.pool }:statistics:${ blockType }:historical`, dateNow / 1000 | 0, JSON.stringify(output)]);
     return commands;
   };
 
-  // Handle Blocks Information in Redis
-  this.handleBlocksInfo = function(blockType, callback, handler) {
-    const commands = [];
-    const blocksLookups = [
-      ['smembers', `${ _this.pool }:blocks:${ blockType }:confirmed`]];
-    _this.executeCommands(blocksLookups, (results) => {
-      const blocks = results[0].sort((a, b) => JSON.parse(a).time - JSON.parse(b).time);
-      if (blocks.length > 100) {
-        blocks.slice(0, blocks.length - 100).forEach((block) => {
-          commands.push(['srem', `${ _this.pool }:blocks:${ blockType }:confirmed`, block]);
-        });
+  // Handle Blocks Information – now uses SSCAN
+  this.handleBlocksInfo = async function(blockType, callback, handler) {
+    try {
+      const key = `${ _this.pool }:blocks:${ blockType }:confirmed`;
+      // Get all members using non‑blocking SSCAN
+      const members = await scanSetAsync(key);
+      // Sort by timestamp (assuming each member is JSON with a 'time' field)
+      const sorted = members
+        .map(m => { try { return JSON.parse(m); } catch(e) { return null; } })
+        .filter(b => b !== null)
+        .sort((a, b) => a.time - b.time);
+
+      if (sorted.length > 100) {
+        const toRemove = sorted.slice(0, sorted.length - 100);
+        // Prepare batch srem commands
+        const commands = [];
+        batchDelete(commands, key, toRemove, (item) => JSON.stringify(item));
+        // Execute the deletions
+        if (commands.length > 0) {
+          _this.executeCommands(commands, () => {
+            if (_this.poolConfig.debug) {
+              logger.debug('Statistics', _this.pool, `Finished updating blocks statistics for ${ blockType } configuration.`);
+            }
+            callback([]);
+          }, handler);
+        } else {
+          callback([]);
+        }
+      } else {
+        callback([]);
       }
-      callback(commands);
-    }, handler);
+    } catch (err) {
+      logger.error(logSystem, logComponent, logSubCat, `Error in handleBlocksInfo: ${ err.message }`);
+      handler(err);
+    }
   };
 
-  // Handle Hashrate Information in Redis
+  // Handle Hashrate Information (already efficient – unchanged)
   this.handleHashrateInfo = function(blockType, callback) {
     const commands = [];
     const windowTime = (((Date.now() / 1000) - _this.hashrateWindow) | 0).toString();
@@ -91,7 +157,7 @@ const PoolStatistics = function (logger, client, poolConfig, portalConfig) {
     callback(commands);
   };
 
-  // Get Historical Information from Redis
+  // Get Historical Information (unchanged)
   this.handleHistoricalInfo = function(blockType, callback, handler) {
     const windowTime = (((Date.now() / 1000) - _this.hashrateWindow) | 0).toString();
     const windowHistorical = (((Date.now() / 1000) - _this.historicalWindow) | 0).toString();
@@ -99,14 +165,15 @@ const PoolStatistics = function (logger, client, poolConfig, portalConfig) {
       ['hgetall', `${ _this.pool }:statistics:${ blockType }:network`],
       ['zrangebyscore', `${ _this.pool }:rounds:${ blockType }:current:shared:hashrate`, windowTime, '+inf'],
       ['zrangebyscore', `${ _this.pool }:rounds:${ blockType }:current:solo:hashrate`, windowTime, '+inf'],
-      ['zremrangebyscore', `${ _this.pool }:statistics:${ blockType }:historical`, 0, `(${ windowHistorical }`]];
+      ['zremrangebyscore', `${ _this.pool }:statistics:${ blockType }:historical`, 0, `(${ windowHistorical }`]
+    ];
     _this.executeCommands(historicalLookups, (results) => {
       const commands = _this.calculateHistoricalInfo(results, blockType);
       callback(commands);
     }, handler);
   };
 
-  // Get Mining Statistics from Daemon
+  // Get Mining Statistics (unchanged)
   this.handleMiningInfo = function(daemon, blockType, callback, handler) {
     const commands = [];
     daemon.cmd('getmininginfo', [], true, (result) => {
@@ -123,23 +190,39 @@ const PoolStatistics = function (logger, client, poolConfig, portalConfig) {
     });
   };
 
-  // Handle Payments Information in Redis
-  this.handlePaymentsInfo = function(blockType, callback, handler) {
-    const commands = [];
-    const paymentsLookups = [
-      ['zrangebyscore', `${ _this.pool }:payments:${ blockType }:records`, '-inf', '+inf']];
-    _this.executeCommands(paymentsLookups, (results) => {
-      const records = results[0].sort((a, b) => JSON.parse(a).time - JSON.parse(b).time);
-      if (records.length > 100) {
-        records.slice(0, records.length - 100).forEach((record) => {
-          commands.push(['zrem', `${ _this.pool }:payments:${ blockType }:records`, record]);
-        });
+  // Handle Payments Information – now uses ZSCAN
+  this.handlePaymentsInfo = async function(blockType, callback, handler) {
+    try {
+      const key = `${ _this.pool }:payments:${ blockType }:records`;
+      // Get all items using non‑blocking ZSCAN
+      const items = await scanZSetAsync(key);
+      // Sort by score (timestamp)
+      items.sort((a, b) => parseFloat(a.score) - parseFloat(b.score));
+
+      if (items.length > 100) {
+        const toRemove = items.slice(0, items.length - 100);
+        const commands = [];
+        batchDelete(commands, key, toRemove, null); // null => use item.member
+        if (commands.length > 0) {
+          _this.executeCommands(commands, () => {
+            if (_this.poolConfig.debug) {
+              logger.debug('Statistics', _this.pool, `Finished updating payments statistics for ${ blockType } configuration.`);
+            }
+            callback([]);
+          }, handler);
+        } else {
+          callback([]);
+        }
+      } else {
+        callback([]);
       }
-      callback(commands);
-    }, handler);
+    } catch (err) {
+      logger.error(logSystem, logComponent, logSubCat, `Error in handlePaymentsInfo: ${ err.message }`);
+      handler(err);
+    }
   };
 
-  // Execute Redis Commands
+  // Execute Redis Commands (unchanged)
   /* istanbul ignore next */
   this.executeCommands = function(commands, callback, handler) {
     _this.client.multi(commands).exec((error, results) => {
@@ -152,18 +235,14 @@ const PoolStatistics = function (logger, client, poolConfig, portalConfig) {
     });
   };
 
-  // Start Interval Initialization
+  // Start Interval Initialization (unchanged)
   /* istanbul ignore next */
   this.handleIntervals = function(daemon, blockType) {
 
     // Handle Blocks Info Interval
     setInterval(() => {
       _this.handleBlocksInfo(blockType, (results) => {
-        _this.executeCommands(results, () => {
-          if (_this.poolConfig.debug) {
-            logger.debug('Statistics', _this.pool, `Finished updating blocks statistics for ${ blockType } configuration.`);
-          }
-        }, () => {});
+        // results may be empty; we already executed deletions inside
       }, () => {});
     }, _this.blocksInterval * 1000);
 
@@ -203,11 +282,7 @@ const PoolStatistics = function (logger, client, poolConfig, portalConfig) {
     // Handle Payment Info Interval
     setInterval(() => {
       _this.handlePaymentsInfo(blockType, (results) => {
-        _this.executeCommands(results, () => {
-          if (_this.poolConfig.debug) {
-            logger.debug('Statistics', _this.pool, `Finished updating payments statistics for ${ blockType } configuration.`);
-          }
-        }, () => {});
+        // deletions already handled inside
       }, () => {});
     }, _this.paymentsInterval * 1000);
   };
