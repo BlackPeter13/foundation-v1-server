@@ -11,7 +11,7 @@ config.identifier = '';
 // Logger Configuration
 config.logger = {};
 config.logger.logColors = true;
-config.logger.logLevel = 'debug';
+config.logger.logLevel = 'info';
 
 // Clustering Configuration
 config.clustering = {};
