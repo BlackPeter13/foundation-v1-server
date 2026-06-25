@@ -1,6 +1,6 @@
 /*
  *
- * API (Updated)
+ * API (Updated) – Non‑blocking SCAN streams
  *
  */
 
@@ -23,206 +23,298 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     'Content-Type': 'application/json'
   };
 
-  // Main Endpoints
-  //////////////////////////////////////////////////////////////////////////////
+  // ==================== NON‑BLOCKING SCAN HELPERS ====================
+
+  // Scan a set -> returns array of members
+  function scanSet(key, pattern = '*', count = 100) {
+    return new Promise((resolve, reject) => {
+      const stream = _this.client.sscanStream(key, { match: pattern, count });
+      const members = [];
+      stream.on('data', (chunk) => { members.push(...chunk); });
+      stream.on('end', () => resolve(members));
+      stream.on('error', reject);
+    });
+  }
+
+  // Scan a hash -> returns object { field: value, ... }
+  function scanHash(key, count = 100) {
+    return new Promise((resolve, reject) => {
+      const stream = _this.client.hscanStream(key, { count });
+      const obj = {};
+      stream.on('data', (chunk) => {
+        for (let i = 0; i < chunk.length; i += 2) {
+          obj[chunk[i]] = chunk[i + 1];
+        }
+      });
+      stream.on('end', () => resolve(obj));
+      stream.on('error', reject);
+    });
+  }
+
+  // Scan a sorted set -> returns array of { member, score }
+  function scanZSet(key, count = 100) {
+    return new Promise((resolve, reject) => {
+      const stream = _this.client.zscanStream(key, { count });
+      const items = [];
+      stream.on('data', (chunk) => {
+        for (let i = 0; i < chunk.length; i += 2) {
+          items.push({ member: chunk[i], score: parseFloat(chunk[i+1]) });
+        }
+      });
+      stream.on('end', () => resolve(items));
+      stream.on('error', reject);
+    });
+  }
+
+  // Scan keys matching a pattern (non‑blocking)
+  function scanKeys(pattern, count = 100) {
+    return new Promise((resolve, reject) => {
+      const stream = _this.client.scanStream({ match: pattern, count });
+      const keys = [];
+      stream.on('data', (chunk) => { keys.push(...chunk); });
+      stream.on('end', () => resolve(keys));
+      stream.on('error', reject);
+    });
+  }
+
+  // ==================== ORIGINAL HANDLERS (modified to use scans) ====================
 
   // API Endpoint for /blocks/confirmed
-  this.handleBlocksConfirmed = function(pool, callback) {
-    const commands = [
-      ['smembers', `${ pool }:blocks:primary:confirmed`],
-      ['smembers', `${ pool }:blocks:auxiliary:confirmed`]];
-    _this.executeCommands(commands, (results) => {
+  this.handleBlocksConfirmed = async function(pool, callback) {
+    try {
+      const [primary, auxiliary] = await Promise.all([
+        scanSet(`${ pool }:blocks:primary:confirmed`),
+        scanSet(`${ pool }:blocks:auxiliary:confirmed`)
+      ]);
       callback(200, {
-        primary: utils.processBlocks(results[0]),
-        auxiliary: utils.processBlocks(results[1]),
+        primary: utils.processBlocks(primary),
+        auxiliary: utils.processBlocks(auxiliary),
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading blocks');
+    }
   };
 
   // API Endpoint for /blocks/kicked
-  this.handleBlocksKicked = function(pool, callback) {
-    const commands = [
-      ['smembers', `${ pool }:blocks:primary:kicked`],
-      ['smembers', `${ pool }:blocks:auxiliary:kicked`]];
-    _this.executeCommands(commands, (results) => {
+  this.handleBlocksKicked = async function(pool, callback) {
+    try {
+      const [primary, auxiliary] = await Promise.all([
+        scanSet(`${ pool }:blocks:primary:kicked`),
+        scanSet(`${ pool }:blocks:auxiliary:kicked`)
+      ]);
       callback(200, {
-        primary: utils.processBlocks(results[0]),
-        auxiliary: utils.processBlocks(results[1])
+        primary: utils.processBlocks(primary),
+        auxiliary: utils.processBlocks(auxiliary)
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading blocks');
+    }
   };
 
   // API Endpoint for /blocks/pending
-  this.handleBlocksPending = function(pool, callback) {
-    const commands = [
-      ['smembers', `${ pool }:blocks:primary:pending`],
-      ['smembers', `${ pool }:blocks:auxiliary:pending`]];
-    _this.executeCommands(commands, (results) => {
+  this.handleBlocksPending = async function(pool, callback) {
+    try {
+      const [primary, auxiliary] = await Promise.all([
+        scanSet(`${ pool }:blocks:primary:pending`),
+        scanSet(`${ pool }:blocks:auxiliary:pending`)
+      ]);
       callback(200, {
-        primary: utils.processBlocks(results[0]),
-        auxiliary: utils.processBlocks(results[1])
+        primary: utils.processBlocks(primary),
+        auxiliary: utils.processBlocks(auxiliary)
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading blocks');
+    }
   };
 
   // API Endpoint for /blocks
-  this.handleBlocks = function(pool, callback) {
-    const commands = [
-      ['smembers', `${ pool }:blocks:primary:confirmed`],
-      ['smembers', `${ pool }:blocks:primary:kicked`],
-      ['smembers', `${ pool }:blocks:primary:pending`],
-      ['smembers', `${ pool }:blocks:auxiliary:confirmed`],
-      ['smembers', `${ pool }:blocks:auxiliary:kicked`],
-      ['smembers', `${ pool }:blocks:auxiliary:pending`]];
-    _this.executeCommands(commands, (results) => {
+  this.handleBlocks = async function(pool, callback) {
+    try {
+      const [primaryConfirmed, primaryKicked, primaryPending,
+             auxiliaryConfirmed, auxiliaryKicked, auxiliaryPending] = await Promise.all([
+        scanSet(`${ pool }:blocks:primary:confirmed`),
+        scanSet(`${ pool }:blocks:primary:kicked`),
+        scanSet(`${ pool }:blocks:primary:pending`),
+        scanSet(`${ pool }:blocks:auxiliary:confirmed`),
+        scanSet(`${ pool }:blocks:auxiliary:kicked`),
+        scanSet(`${ pool }:blocks:auxiliary:pending`)
+      ]);
       callback(200, {
         primary: {
-          confirmed: utils.processBlocks(results[0]),
-          kicked: utils.processBlocks(results[1]),
-          pending: utils.processBlocks(results[2]),
+          confirmed: utils.processBlocks(primaryConfirmed),
+          kicked: utils.processBlocks(primaryKicked),
+          pending: utils.processBlocks(primaryPending),
         },
         auxiliary: {
-          confirmed: utils.processBlocks(results[3]),
-          kicked: utils.processBlocks(results[4]),
-          pending: utils.processBlocks(results[5])
+          confirmed: utils.processBlocks(auxiliaryConfirmed),
+          kicked: utils.processBlocks(auxiliaryKicked),
+          pending: utils.processBlocks(auxiliaryPending)
         }
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading blocks');
+    }
   };
 
   // API Endpoint for /blocks/[miner]
-  this.handleBlocksSpecific = function(pool, miner, callback) {
-    const commands = [
-      ['smembers', `${ pool }:blocks:primary:confirmed`],
-      ['smembers', `${ pool }:blocks:primary:kicked`],
-      ['smembers', `${ pool }:blocks:primary:pending`],
-      ['smembers', `${ pool }:blocks:auxiliary:confirmed`],
-      ['smembers', `${ pool }:blocks:auxiliary:kicked`],
-      ['smembers', `${ pool }:blocks:auxiliary:pending`]];
-    _this.executeCommands(commands, (results) => {
+  this.handleBlocksSpecific = async function(pool, miner, callback) {
+    try {
+      const [primaryConfirmed, primaryKicked, primaryPending,
+             auxiliaryConfirmed, auxiliaryKicked, auxiliaryPending] = await Promise.all([
+        scanSet(`${ pool }:blocks:primary:confirmed`),
+        scanSet(`${ pool }:blocks:primary:kicked`),
+        scanSet(`${ pool }:blocks:primary:pending`),
+        scanSet(`${ pool }:blocks:auxiliary:confirmed`),
+        scanSet(`${ pool }:blocks:auxiliary:kicked`),
+        scanSet(`${ pool }:blocks:auxiliary:pending`)
+      ]);
       callback(200, {
         primary: {
-          confirmed: utils.listBlocks(results[0], miner),
-          kicked: utils.listBlocks(results[1], miner),
-          pending: utils.listBlocks(results[2], miner),
+          confirmed: utils.listBlocks(primaryConfirmed, miner),
+          kicked: utils.listBlocks(primaryKicked, miner),
+          pending: utils.listBlocks(primaryPending, miner),
         },
         auxiliary: {
-          confirmed: utils.listBlocks(results[3], miner),
-          kicked: utils.listBlocks(results[4], miner),
-          pending: utils.listBlocks(results[5], miner),
+          confirmed: utils.listBlocks(auxiliaryConfirmed, miner),
+          kicked: utils.listBlocks(auxiliaryKicked, miner),
+          pending: utils.listBlocks(auxiliaryPending, miner),
         }
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading blocks');
+    }
   };
 
-  // API Endpoint for /miners/active
-  this.handleHistorical = function(pool, callback) {
+  // API Endpoint for /historical
+  this.handleHistorical = async function(pool, callback) {
     const historicalWindow = _this.poolConfigs[pool].statistics.historicalWindow;
     const windowHistorical = (((Date.now() / 1000) - historicalWindow) | 0).toString();
+    // zrangebyscore with limit would be fine, but we keep it as is (it's already O(log N) and limited by score)
+    // We'll use the existing executeCommands for these two since they're not scanning full sets
     const commands = [
       ['zrangebyscore', `${ pool }:statistics:primary:historical`, windowHistorical, '+inf'],
-      ['zrangebyscore', `${ pool }:statistics:auxiliary:historical`, windowHistorical, '+inf']];
+      ['zrangebyscore', `${ pool }:statistics:auxiliary:historical`, windowHistorical, '+inf']
+    ];
     _this.executeCommands(commands, (results) => {
       callback(200, {
         primary: utils.processHistorical(results[0]),
         auxiliary: utils.processHistorical(results[1]),
       });
-    }, callback);
+    }, (err) => callback(500, 'Error reading historical'));
   };
 
   // API Endpoint for /miners/active
-  this.handleMinersActive = function(pool, callback) {
+  this.handleMinersActive = async function(pool, callback) {
     const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
     const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
     const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
     const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
-    const commands = [
-      ['hgetall', `${ pool }:rounds:primary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:primary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf']];
-    _this.executeCommands(commands, (results) => {
+    try {
+      const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
+             auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
+        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
+        // zrangebyscore is fine, we keep as multi
+        new Promise((resolve, reject) => {
+          _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (err, res) => {
+            if (err) reject(err); else resolve(res);
+          });
+        }),
+        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
+        new Promise((resolve, reject) => {
+          _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (err, res) => {
+            if (err) reject(err); else resolve(res);
+          });
+        }),
+        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
+        new Promise((resolve, reject) => {
+          _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (err, res) => {
+            if (err) reject(err); else resolve(res);
+          });
+        }),
+        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
+        new Promise((resolve, reject) => {
+          _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (err, res) => {
+            if (err) reject(err); else resolve(res);
+          });
+        })
+      ]);
       callback(200, {
         primary: {
-          shared: utils.processMiners(results[0], results[1], multiplier, hashrateWindow, true),
-          solo: utils.processMiners(results[2], results[3], multiplier, hashrateWindow, true),
+          shared: utils.processMiners(primarySharedShares, primarySharedHash, multiplier, hashrateWindow, true),
+          solo: utils.processMiners(primarySoloShares, primarySoloHash, multiplier, hashrateWindow, true),
         },
         auxiliary: {
-          shared: utils.processMiners(results[4], results[5], multiplier, hashrateWindow, true),
-          solo: utils.processMiners(results[6], results[7], multiplier, hashrateWindow, true),
+          shared: utils.processMiners(auxiliarySharedShares, auxiliarySharedHash, multiplier, hashrateWindow, true),
+          solo: utils.processMiners(auxiliarySoloShares, auxiliarySoloHash, multiplier, hashrateWindow, true),
         }
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading miners');
+    }
   };
 
   // API Endpoint for /miners/[miner]
-  this.handleMinersSpecific = function(pool, miner, callback) {
+  this.handleMinersSpecific = async function(pool, miner, callback) {
     const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
     const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
     const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
     const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
-    const commands = [
-      ['hgetall', `${ pool }:payments:primary:balances`],
-      ['hgetall', `${ pool }:payments:primary:generate`],
-      ['hgetall', `${ pool }:payments:primary:immature`],
-      ['hgetall', `${ pool }:payments:primary:paid`],
-      ['hgetall', `${ pool }:rounds:primary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:primary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:payments:auxiliary:balances`],
-      ['hgetall', `${ pool }:payments:auxiliary:generate`],
-      ['hgetall', `${ pool }:payments:auxiliary:immature`],
-      ['hgetall', `${ pool }:payments:auxiliary:paid`],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf']];
-    _this.executeCommands(commands, (results) => {
+    try {
+      const [primaryBal, primaryGen, primaryImm, primaryPaid,
+             primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
+             auxiliaryBal, auxiliaryGen, auxiliaryImm, auxiliaryPaid,
+             auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
+        scanHash(`${ pool }:payments:primary:balances`),
+        scanHash(`${ pool }:payments:primary:generate`),
+        scanHash(`${ pool }:payments:primary:immature`),
+        scanHash(`${ pool }:payments:primary:paid`),
+        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:payments:auxiliary:balances`),
+        scanHash(`${ pool }:payments:auxiliary:generate`),
+        scanHash(`${ pool }:payments:auxiliary:immature`),
+        scanHash(`${ pool }:payments:auxiliary:paid`),
+        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+      ]);
 
-      // Structure Share Data
-      const primarySharedShareData = utils.processShares(results[4], miner, 'miner');
-      const primarySoloShareData = utils.processShares(results[6], miner, 'miner');
-      const auxiliarySharedShareData = utils.processShares(results[12], miner, 'miner');
-      const auxiliarySoloShareData = utils.processShares(results[14], miner, 'miner');
+      // Structure data (same as original)
+      const primarySharedShareData = utils.processShares(primarySharedShares, miner, 'miner');
+      const primarySoloShareData = utils.processShares(primarySoloShares, miner, 'miner');
+      const auxiliarySharedShareData = utils.processShares(auxiliarySharedShares, miner, 'miner');
+      const auxiliarySoloShareData = utils.processShares(auxiliarySoloShares, miner, 'miner');
 
-      // Structure Times Data
-      const primarySharedTimesData = utils.processTimes(results[4], miner, 'miner');
-      const auxiliarySharedTimesData = utils.processTimes(results[12], miner, 'miner');
+      const primarySharedTimesData = utils.processTimes(primarySharedShares, miner, 'miner');
+      const auxiliarySharedTimesData = utils.processTimes(auxiliarySharedShares, miner, 'miner');
 
-      // Structure Hashrate Data
-      const primarySharedHashrateData = utils.processWork(results[5], miner, 'miner');
-      const primarySoloHashrateData = utils.processWork(results[7], miner, 'miner');
-      const auxiliarySharedHashrateData = utils.processWork(results[13], miner, 'miner');
-      const auxiliarySoloHashrateData = utils.processWork(results[15], miner, 'miner');
+      const primarySharedHashrateData = utils.processWork(primarySharedHash, miner, 'miner');
+      const primarySoloHashrateData = utils.processWork(primarySoloHash, miner, 'miner');
+      const auxiliarySharedHashrateData = utils.processWork(auxiliarySharedHash, miner, 'miner');
+      const auxiliarySoloHashrateData = utils.processWork(auxiliarySoloHash, miner, 'miner');
 
-      // Structure Payments Data
-      const primaryBalanceData = utils.processPayments(results[0], miner)[miner];
-      const primaryGenerateData = utils.processPayments(results[1], miner)[miner];
-      const primaryImmatureData = utils.processPayments(results[2], miner)[miner];
-      const primaryPaidData = utils.processPayments(results[3], miner)[miner];
-      const auxiliaryBalanceData = utils.processPayments(results[8], miner)[miner];
-      const auxiliaryGenerateData = utils.processPayments(results[9], miner)[miner];
-      const auxiliaryImmatureData = utils.processPayments(results[10], miner)[miner];
-      const auxiliaryPaidData = utils.processPayments(results[11], miner)[miner];
+      const primaryBalanceData = utils.processPayments(primaryBal, miner)[miner];
+      const primaryGenerateData = utils.processPayments(primaryGen, miner)[miner];
+      const primaryImmatureData = utils.processPayments(primaryImm, miner)[miner];
+      const primaryPaidData = utils.processPayments(primaryPaid, miner)[miner];
+      const auxiliaryBalanceData = utils.processPayments(auxiliaryBal, miner)[miner];
+      const auxiliaryGenerateData = utils.processPayments(auxiliaryGen, miner)[miner];
+      const auxiliaryImmatureData = utils.processPayments(auxiliaryImm, miner)[miner];
+      const auxiliaryPaidData = utils.processPayments(auxiliaryPaid, miner)[miner];
 
-      // Structure Share Type Data
-      const primarySharedTypesData = utils.processTypes(results[4], miner, 'miner');
-      const primarySoloTypesData = utils.processTypes(results[6], miner, 'miner');
-      const auxiliarySharedTypesData = utils.processTypes(results[12], miner, 'miner');
-      const auxiliarySoloTypesData = utils.processTypes(results[14], miner, 'miner');
+      const primarySharedTypesData = utils.processTypes(primarySharedShares, miner, 'miner');
+      const primarySoloTypesData = utils.processTypes(primarySoloShares, miner, 'miner');
+      const auxiliarySharedTypesData = utils.processTypes(auxiliarySharedShares, miner, 'miner');
+      const auxiliarySoloTypesData = utils.processTypes(auxiliarySoloShares, miner, 'miner');
 
-      // Structure Worker Type Data
-      const primarySharedWorkerData = utils.listWorkers(results[4], miner);
-      const primarySoloWorkerData = utils.listWorkers(results[6], miner);
-      const auxiliarySharedWorkerData = utils.listWorkers(results[12], miner);
-      const auxiliarySoloWorkerData = utils.listWorkers(results[14], miner);
+      const primarySharedWorkerData = utils.listWorkers(primarySharedShares, miner);
+      const primarySoloWorkerData = utils.listWorkers(primarySoloShares, miner);
+      const auxiliarySharedWorkerData = utils.listWorkers(auxiliarySharedShares, miner);
+      const auxiliarySoloWorkerData = utils.listWorkers(auxiliarySoloShares, miner);
 
-      // Build Miner Statistics
       callback(200, {
         primary: {
           hashrate: {
@@ -279,252 +371,280 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
           },
         }
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading miner data');
+    }
   };
 
   // API Endpoint for /miners
-  this.handleMiners = function(pool, callback) {
+  this.handleMiners = async function(pool, callback) {
     const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
     const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
     const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
     const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
-    const commands = [
-      ['hgetall', `${ pool }:rounds:primary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:primary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf']];
-    _this.executeCommands(commands, (results) => {
+    try {
+      const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
+             auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
+        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+      ]);
       callback(200, {
         primary: {
-          shared: utils.processMiners(results[0], results[1], multiplier, hashrateWindow, false),
-          solo: utils.processMiners(results[2], results[3], multiplier, hashrateWindow, false),
+          shared: utils.processMiners(primarySharedShares, primarySharedHash, multiplier, hashrateWindow, false),
+          solo: utils.processMiners(primarySoloShares, primarySoloHash, multiplier, hashrateWindow, false),
         },
         auxiliary: {
-          shared: utils.processMiners(results[4], results[5], multiplier, hashrateWindow, false),
-          solo: utils.processMiners(results[6], results[7], multiplier, hashrateWindow, false),
+          shared: utils.processMiners(auxiliarySharedShares, auxiliarySharedHash, multiplier, hashrateWindow, false),
+          solo: utils.processMiners(auxiliarySoloShares, auxiliarySoloHash, multiplier, hashrateWindow, false),
         }
       });
-    }, callback);
-  };
-
-  // API Endpoint for /payments/balances
-  this.handlePaymentsBalances = function(pool, callback) {
-    const commands = [
-      ['hgetall', `${ pool }:payments:primary:balances`],
-      ['hgetall', `${ pool }:payments:auxiliary:balances`]];
-    _this.executeCommands(commands, (results) => {
-      callback(200, {
-        primary: utils.processPayments(results[0]),
-        auxiliary: utils.processPayments(results[1]),
-      });
-    }, callback);
-  };
-
-  // API Endpoint for /payments/generate
-  this.handlePaymentsGenerate = function(pool, callback) {
-    const commands = [
-      ['hgetall', `${ pool }:payments:primary:generate`],
-      ['hgetall', `${ pool }:payments:auxiliary:generate`]];
-    _this.executeCommands(commands, (results) => {
-      callback(200, {
-        primary: utils.processPayments(results[0]),
-        auxiliary: utils.processPayments(results[1]),
-      });
-    }, callback);
-  };
-
-  // API Endpoint for /payments/immature
-  this.handlePaymentsImmature = function(pool, callback) {
-    const commands = [
-      ['hgetall', `${ pool }:payments:primary:immature`],
-      ['hgetall', `${ pool }:payments:auxiliary:immature`]];
-    _this.executeCommands(commands, (results) => {
-      callback(200, {
-        primary: utils.processPayments(results[0]),
-        auxiliary: utils.processPayments(results[1]),
-      });
-    }, callback);
-  };
-
-  // API Endpoint for /payments/paid
-  this.handlePaymentsPaid = function(pool, callback) {
-    const commands = [
-      ['hgetall', `${ pool }:payments:primary:paid`],
-      ['hgetall', `${ pool }:payments:auxiliary:paid`]];
-    _this.executeCommands(commands, (results) => {
-      callback(200, {
-        primary: utils.processPayments(results[0]),
-        auxiliary: utils.processPayments(results[1]),
-      });
-    }, callback);
-  };
-
-  // API Endpoint for /payments/paid
-  this.handlePaymentsRecords = function(pool, callback) {
-    const commands = [
-      ['zrange', `${ pool }:payments:primary:records`, 0, -1],
-      ['zrange', `${ pool }:payments:auxiliary:records`, 0, -1]];
-    _this.executeCommands(commands, (results) => {
-      callback(200, {
-        primary: utils.processRecords(results[0]),
-        auxiliary: utils.processRecords(results[1]),
-      });
-    }, callback);
-  };
-
-  // API Endpoint for /payments
-  this.handlePayments = function(pool, callback) {
-    const commands = [
-      ['hgetall', `${ pool }:payments:primary:balances`],
-      ['hgetall', `${ pool }:payments:primary:generate`],
-      ['hgetall', `${ pool }:payments:primary:immature`],
-      ['hgetall', `${ pool }:payments:primary:paid`],
-      ['hgetall', `${ pool }:payments:auxiliary:balances`],
-      ['hgetall', `${ pool }:payments:auxiliary:generate`],
-      ['hgetall', `${ pool }:payments:auxiliary:immature`],
-      ['hgetall', `${ pool }:payments:auxiliary:paid`]];
-    _this.executeCommands(commands, (results) => {
-      callback(200, {
-        primary: {
-          balances: utils.processPayments(results[0]),
-          generate: utils.processPayments(results[1]),
-          immature: utils.processPayments(results[2]),
-          paid: utils.processPayments(results[3]),
-        },
-        auxiliary: {
-          balances: utils.processPayments(results[4]),
-          generate: utils.processPayments(results[5]),
-          immature: utils.processPayments(results[6]),
-          paid: utils.processPayments(results[7]),
-        }
-      });
-    }, callback);
-  };
-
-  // API Endpoint for /rounds/current
-  this.handleRoundsCurrent = function(pool, callback) {
-    const commands = [
-      ['hgetall', `${ pool }:rounds:primary:current:shared:shares`],
-      ['hgetall', `${ pool }:rounds:primary:current:solo:shares`],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:shared:shares`],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:solo:shares`]];
-    _this.executeCommands(commands, (results) => {
-      callback(200, {
-        primary: {
-          round: 'current',
-          shared: utils.processShares(results[0]),
-          solo: utils.processShares(results[1]),
-          times: utils.processTimes(results[0]),
-        },
-        auxiliary: {
-          round: 'current',
-          shared: utils.processShares(results[2]),
-          solo: utils.processShares(results[3]),
-          times: utils.processTimes(results[2]),
-        }
-      });
-    }, callback);
-  };
-
-  // API Endpoint for /rounds/[height]
-  this.handleRoundsHeight = function(pool, height, callback) {
-    const commands = [
-      ['hgetall', `${ pool }:rounds:primary:round-${ height }:shares`],
-      ['hgetall', `${ pool }:rounds:auxiliary:round-${ height }:shares`]];
-    _this.executeCommands(commands, (results) => {
-      callback(200, {
-        primary: {
-          round: parseFloat(height),
-          times: utils.processTimes(results[0]),
-          work: utils.processShares(results[0]),
-        },
-        auxiliary: {
-          round: parseFloat(height),
-          times: utils.processTimes(results[1]),
-          work: utils.processShares(results[1]),
-        }
-      });
-    }, callback);
-  };
-
-  // Helper Function for /rounds
-  this.processRounds = function(pool, rounds, blockType, callback, handler) {
-    const combined = [];
-    if (rounds.length >= 1) {
-      const processor = new Promise((resolve,) => {
-        rounds.forEach((height, idx) => {
-          const commands = [
-            ['hgetall', `${ pool }:rounds:${ blockType }:round-${ height }:shares`]];
-          _this.executeCommands(commands, (results) => {
-            combined.push({
-              round: parseFloat(height),
-              times: utils.processTimes(results[0]),
-              work: utils.processShares(results[0]),
-            });
-            if (idx === rounds.length - 1) {
-              resolve(combined);
-            }
-          }, handler);
-        });
-      });
-      processor.then((combined) => {
-        callback(combined);
-      });
-    } else {
-      callback(combined);
+    } catch (err) {
+      callback(500, 'Error reading miners');
     }
   };
 
+  // API Endpoint for /payments/balances
+  this.handlePaymentsBalances = async function(pool, callback) {
+    try {
+      const [primary, auxiliary] = await Promise.all([
+        scanHash(`${ pool }:payments:primary:balances`),
+        scanHash(`${ pool }:payments:auxiliary:balances`)
+      ]);
+      callback(200, {
+        primary: utils.processPayments(primary),
+        auxiliary: utils.processPayments(auxiliary),
+      });
+    } catch (err) {
+      callback(500, 'Error reading payments');
+    }
+  };
+
+  // API Endpoint for /payments/generate
+  this.handlePaymentsGenerate = async function(pool, callback) {
+    try {
+      const [primary, auxiliary] = await Promise.all([
+        scanHash(`${ pool }:payments:primary:generate`),
+        scanHash(`${ pool }:payments:auxiliary:generate`)
+      ]);
+      callback(200, {
+        primary: utils.processPayments(primary),
+        auxiliary: utils.processPayments(auxiliary),
+      });
+    } catch (err) {
+      callback(500, 'Error reading payments');
+    }
+  };
+
+  // API Endpoint for /payments/immature
+  this.handlePaymentsImmature = async function(pool, callback) {
+    try {
+      const [primary, auxiliary] = await Promise.all([
+        scanHash(`${ pool }:payments:primary:immature`),
+        scanHash(`${ pool }:payments:auxiliary:immature`)
+      ]);
+      callback(200, {
+        primary: utils.processPayments(primary),
+        auxiliary: utils.processPayments(auxiliary),
+      });
+    } catch (err) {
+      callback(500, 'Error reading payments');
+    }
+  };
+
+  // API Endpoint for /payments/paid
+  this.handlePaymentsPaid = async function(pool, callback) {
+    try {
+      const [primary, auxiliary] = await Promise.all([
+        scanHash(`${ pool }:payments:primary:paid`),
+        scanHash(`${ pool }:payments:auxiliary:paid`)
+      ]);
+      callback(200, {
+        primary: utils.processPayments(primary),
+        auxiliary: utils.processPayments(auxiliary),
+      });
+    } catch (err) {
+      callback(500, 'Error reading payments');
+    }
+  };
+
+  // API Endpoint for /payments/records
+  this.handlePaymentsRecords = async function(pool, callback) {
+    try {
+      const [primaryItems, auxiliaryItems] = await Promise.all([
+        scanZSet(`${ pool }:payments:primary:records`),
+        scanZSet(`${ pool }:payments:auxiliary:records`)
+      ]);
+      const primary = primaryItems.map(item => item.member);
+      const auxiliary = auxiliaryItems.map(item => item.member);
+      callback(200, {
+        primary: utils.processRecords(primary),
+        auxiliary: utils.processRecords(auxiliary),
+      });
+    } catch (err) {
+      callback(500, 'Error reading payment records');
+    }
+  };
+
+  // API Endpoint for /payments
+  this.handlePayments = async function(pool, callback) {
+    try {
+      const [primaryBal, primaryGen, primaryImm, primaryPaid,
+             auxiliaryBal, auxiliaryGen, auxiliaryImm, auxiliaryPaid] = await Promise.all([
+        scanHash(`${ pool }:payments:primary:balances`),
+        scanHash(`${ pool }:payments:primary:generate`),
+        scanHash(`${ pool }:payments:primary:immature`),
+        scanHash(`${ pool }:payments:primary:paid`),
+        scanHash(`${ pool }:payments:auxiliary:balances`),
+        scanHash(`${ pool }:payments:auxiliary:generate`),
+        scanHash(`${ pool }:payments:auxiliary:immature`),
+        scanHash(`${ pool }:payments:auxiliary:paid`)
+      ]);
+      callback(200, {
+        primary: {
+          balances: utils.processPayments(primaryBal),
+          generate: utils.processPayments(primaryGen),
+          immature: utils.processPayments(primaryImm),
+          paid: utils.processPayments(primaryPaid),
+        },
+        auxiliary: {
+          balances: utils.processPayments(auxiliaryBal),
+          generate: utils.processPayments(auxiliaryGen),
+          immature: utils.processPayments(auxiliaryImm),
+          paid: utils.processPayments(auxiliaryPaid),
+        }
+      });
+    } catch (err) {
+      callback(500, 'Error reading payments');
+    }
+  };
+
+  // API Endpoint for /rounds/current
+  this.handleRoundsCurrent = async function(pool, callback) {
+    try {
+      const [primaryShared, primarySolo, auxiliaryShared, auxiliarySolo] = await Promise.all([
+        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
+        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
+        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
+        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`)
+      ]);
+      callback(200, {
+        primary: {
+          round: 'current',
+          shared: utils.processShares(primaryShared),
+          solo: utils.processShares(primarySolo),
+          times: utils.processTimes(primaryShared),
+        },
+        auxiliary: {
+          round: 'current',
+          shared: utils.processShares(auxiliaryShared),
+          solo: utils.processShares(auxiliarySolo),
+          times: utils.processTimes(auxiliaryShared),
+        }
+      });
+    } catch (err) {
+      callback(500, 'Error reading rounds');
+    }
+  };
+
+  // API Endpoint for /rounds/[height]
+  this.handleRoundsHeight = async function(pool, height, callback) {
+    try {
+      const [primary, auxiliary] = await Promise.all([
+        scanHash(`${ pool }:rounds:primary:round-${ height }:shares`),
+        scanHash(`${ pool }:rounds:auxiliary:round-${ height }:shares`)
+      ]);
+      callback(200, {
+        primary: {
+          round: parseFloat(height),
+          times: utils.processTimes(primary),
+          work: utils.processShares(primary),
+        },
+        auxiliary: {
+          round: parseFloat(height),
+          times: utils.processTimes(auxiliary),
+          work: utils.processShares(auxiliary),
+        }
+      });
+    } catch (err) {
+      callback(500, 'Error reading round data');
+    }
+  };
+
+  // Helper Function for /rounds (now using scanKeys)
+  this.processRounds = async function(pool, blockType) {
+    const pattern = `${ pool }:rounds:${ blockType }:round-*:shares`;
+    const keys = await scanKeys(pattern);
+    const heights = keys.map(key => key.split(':')[3].split('-')[1]);
+    const results = [];
+    for (const height of heights) {
+      const shares = await scanHash(`${ pool }:rounds:${ blockType }:round-${ height }:shares`);
+      results.push({
+        round: parseFloat(height),
+        times: utils.processTimes(shares),
+        work: utils.processShares(shares),
+      });
+    }
+    return results;
+  };
+
   // API Endpoint for /rounds
-  this.handleRounds = function(pool, callback) {
-    const keys = [
-      ['keys', `${ pool }:rounds:primary:round-*:shares`],
-      ['keys', `${ pool }:rounds:auxiliary:round-*:shares`]];
-    _this.executeCommands(keys, (results) => {
-      const rounds = {};
-      const primaryRounds = results[0].map((key) => key.split(':')[3].split('-')[1]);
-      const auxiliaryRounds = results[1].map((key) => key.split(':')[3].split('-')[1]);
-      _this.processRounds(pool, primaryRounds, 'primary', (combined) => {
-        rounds.primary = combined;
-        _this.processRounds(pool, auxiliaryRounds, 'auxiliary', (combined) => {
-          rounds.auxiliary = combined;
-          callback(200, rounds);
-        }, callback);
-      }, callback);
-    }, callback);
+  this.handleRounds = async function(pool, callback) {
+    try {
+      const [primaryRounds, auxiliaryRounds] = await Promise.all([
+        _this.processRounds(pool, 'primary'),
+        _this.processRounds(pool, 'auxiliary')
+      ]);
+      callback(200, {
+        primary: primaryRounds,
+        auxiliary: auxiliaryRounds
+      });
+    } catch (err) {
+      callback(500, 'Error reading rounds');
+    }
   };
 
   // API Endpoint for /statistics
-  /* istanbul ignore next */
-  this.handleStatistics = function(pool, callback) {
+  this.handleStatistics = async function(pool, callback) {
     const config = _this.poolConfigs[pool] || {};
     const algorithm = config.primary.coin.algorithms.mining;
     const hashrateWindow = config.statistics.hashrateWindow;
     const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
     const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
-    const commands = [
-      ['hgetall', `${ pool }:blocks:primary:counts`],
-      ['smembers', `${ pool }:blocks:primary:pending`],
-      ['smembers', `${ pool }:blocks:primary:confirmed`],
-      ['hgetall', `${ pool }:payments:primary:counts`],
-      ['hgetall', `${ pool }:rounds:primary:current:shared:counts`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf'],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:statistics:primary:network`],
-      ['hgetall', `${ pool }:blocks:auxiliary:counts`],
-      ['smembers', `${ pool }:blocks:auxiliary:pending`],
-      ['smembers', `${ pool }:blocks:auxiliary:confirmed`],
-      ['hgetall', `${ pool }:payments:auxiliary:counts`],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:shared:counts`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:statistics:auxiliary:network`],
-    ];
-    _this.executeCommands(commands, (results) => {
+
+    try {
+      // Many of these are small hashes, but we'll use scan for consistency
+      const [
+        primaryBlockCounts, primaryPending, primaryConfirmed,
+        primaryPaymentCounts, primarySharedCounts, primarySharedHash, primarySoloHash,
+        primaryNetwork,
+        auxiliaryBlockCounts, auxiliaryPending, auxiliaryConfirmed,
+        auxiliaryPaymentCounts, auxiliarySharedCounts, auxiliarySharedHash, auxiliarySoloHash,
+        auxiliaryNetwork
+      ] = await Promise.all([
+        scanHash(`${ pool }:blocks:primary:counts`),
+        scanSet(`${ pool }:blocks:primary:pending`),
+        scanSet(`${ pool }:blocks:primary:confirmed`),
+        scanHash(`${ pool }:payments:primary:counts`),
+        scanHash(`${ pool }:rounds:primary:current:shared:counts`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:statistics:primary:network`),
+        scanHash(`${ pool }:blocks:auxiliary:counts`),
+        scanSet(`${ pool }:blocks:auxiliary:pending`),
+        scanSet(`${ pool }:blocks:auxiliary:confirmed`),
+        scanHash(`${ pool }:payments:auxiliary:counts`),
+        scanHash(`${ pool }:rounds:auxiliary:current:shared:counts`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:statistics:auxiliary:network`)
+      ]);
+
       callback(200, {
         primary: {
           config: {
@@ -536,33 +656,33 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
             recipientFee: config.enabled ? config.primary.recipients.reduce((p_sum, a) => p_sum + a.percentage, 0) : 0,
           },
           blocks: {
-            valid: parseFloat(results[0] ? results[0].valid || 0 : 0),
-            invalid: parseFloat(results[0] ? results[0].invalid || 0 : 0),
+            valid: parseFloat(primaryBlockCounts ? primaryBlockCounts.valid || 0 : 0),
+            invalid: parseFloat(primaryBlockCounts ? primaryBlockCounts.invalid || 0 : 0),
           },
           shares: {
-            valid: parseFloat(results[4] ? results[4].valid || 0 : 0),
-            stale: parseFloat(results[4] ? results[4].stale || 0 : 0),
-            invalid: parseFloat(results[4] ? results[4].invalid || 0 : 0),
+            valid: parseFloat(primarySharedCounts ? primarySharedCounts.valid || 0 : 0),
+            stale: parseFloat(primarySharedCounts ? primarySharedCounts.stale || 0 : 0),
+            invalid: parseFloat(primarySharedCounts ? primarySharedCounts.invalid || 0 : 0),
           },
           hashrate: {
-            shared: (multiplier * utils.processWork(results[5])) / hashrateWindow,
-            solo: (multiplier * utils.processWork(results[6])) / hashrateWindow,
+            shared: (multiplier * utils.processWork(primarySharedHash)) / hashrateWindow,
+            solo: (multiplier * utils.processWork(primarySoloHash)) / hashrateWindow,
           },
           network: {
-            difficulty: parseFloat(results[7] ? results[7].difficulty || 0 : 0),
-            hashrate: parseFloat(results[7] ? results[7].hashrate || 0 : 0),
-            height: parseFloat(results[7] ? results[7].height || 0 : 0),
+            difficulty: parseFloat(primaryNetwork ? primaryNetwork.difficulty || 0 : 0),
+            hashrate: parseFloat(primaryNetwork ? primaryNetwork.hashrate || 0 : 0),
+            height: parseFloat(primaryNetwork ? primaryNetwork.height || 0 : 0),
           },
           payments: {
-            last: parseFloat(results[3] ? results[3].last || 0 : 0),
-            next: parseFloat(results[3] ? results[3].next || 0 : 0),
-            total: parseFloat(results[3] ? results[3].total || 0 : 0),
+            last: parseFloat(primaryPaymentCounts ? primaryPaymentCounts.last || 0 : 0),
+            next: parseFloat(primaryPaymentCounts ? primaryPaymentCounts.next || 0 : 0),
+            total: parseFloat(primaryPaymentCounts ? primaryPaymentCounts.total || 0 : 0),
           },
           status: {
-            effort: parseFloat(results[4] ? results[4].effort || 0 : 0),
-            luck: utils.processLuck(results[1], results[2]),
-            miners: utils.combineMiners(results[5], results[6]),
-            workers: utils.combineWorkers(results[5], results[6]),
+            effort: parseFloat(primarySharedCounts ? primarySharedCounts.effort || 0 : 0),
+            luck: utils.processLuck(primaryPending, primaryConfirmed),
+            miners: utils.combineMiners(primarySharedHash, primarySoloHash),
+            workers: utils.combineWorkers(primarySharedHash, primarySoloHash),
           },
         },
         auxiliary: {
@@ -575,108 +695,111 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
             recipientFee: (config.auxiliary && config.auxiliary.enabled) ? config.auxiliary.recipients.reduce((p_sum, a) => p_sum + a.percentage, 0) : 0,
           },
           blocks: {
-            valid: parseFloat(results[8] ? results[8].valid || 0 : 0),
-            invalid: parseFloat(results[8] ? results[8].invalid || 0 : 0),
+            valid: parseFloat(auxiliaryBlockCounts ? auxiliaryBlockCounts.valid || 0 : 0),
+            invalid: parseFloat(auxiliaryBlockCounts ? auxiliaryBlockCounts.invalid || 0 : 0),
           },
           shares: {
-            valid: parseFloat(results[12] ? results[12].valid || 0 : 0),
-            stale: parseFloat(results[12] ? results[12].stale || 0 : 0),
-            invalid: parseFloat(results[12] ? results[12].invalid || 0 : 0),
+            valid: parseFloat(auxiliarySharedCounts ? auxiliarySharedCounts.valid || 0 : 0),
+            stale: parseFloat(auxiliarySharedCounts ? auxiliarySharedCounts.stale || 0 : 0),
+            invalid: parseFloat(auxiliarySharedCounts ? auxiliarySharedCounts.invalid || 0 : 0),
           },
           hashrate: {
-            shared: (multiplier * utils.processWork(results[13])) / hashrateWindow,
-            solo: (multiplier * utils.processWork(results[14])) / hashrateWindow,
+            shared: (multiplier * utils.processWork(auxiliarySharedHash)) / hashrateWindow,
+            solo: (multiplier * utils.processWork(auxiliarySoloHash)) / hashrateWindow,
           },
           network: {
-            difficulty: parseFloat(results[15] ? results[15].difficulty || 0 : 0),
-            hashrate: parseFloat(results[15] ? results[15].hashrate || 0 : 0),
-            height: parseFloat(results[15] ? results[15].height || 0 : 0),
+            difficulty: parseFloat(auxiliaryNetwork ? auxiliaryNetwork.difficulty || 0 : 0),
+            hashrate: parseFloat(auxiliaryNetwork ? auxiliaryNetwork.hashrate || 0 : 0),
+            height: parseFloat(auxiliaryNetwork ? auxiliaryNetwork.height || 0 : 0),
           },
           payments: {
-            last: parseFloat(results[11] ? results[11].last || 0 : 0),
-            next: parseFloat(results[11] ? results[11].next || 0 : 0),
-            total: parseFloat(results[11] ? results[11].total || 0 : 0),
+            last: parseFloat(auxiliaryPaymentCounts ? auxiliaryPaymentCounts.last || 0 : 0),
+            next: parseFloat(auxiliaryPaymentCounts ? auxiliaryPaymentCounts.next || 0 : 0),
+            total: parseFloat(auxiliaryPaymentCounts ? auxiliaryPaymentCounts.total || 0 : 0),
           },
           status: {
-            effort: parseFloat(results[12] ? results[12].effort || 0 : 0),
-            luck: utils.processLuck(results[9], results[10]),
-            miners: utils.combineMiners(results[13], results[14]),
-            workers: utils.combineWorkers(results[13], results[14]),
+            effort: parseFloat(auxiliarySharedCounts ? auxiliarySharedCounts.effort || 0 : 0),
+            luck: utils.processLuck(auxiliaryPending, auxiliaryConfirmed),
+            miners: utils.combineMiners(auxiliarySharedHash, auxiliarySoloHash),
+            workers: utils.combineWorkers(auxiliarySharedHash, auxiliarySoloHash),
           },
         }
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading statistics');
+    }
   };
 
   // API Endpoint for /workers/active
-  this.handleWorkersActive = function(pool, callback) {
+  this.handleWorkersActive = async function(pool, callback) {
     const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
     const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
     const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
     const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
-    const commands = [
-      ['hgetall', `${ pool }:rounds:primary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:primary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf']];
-    _this.executeCommands(commands, (results) => {
+    try {
+      const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
+             auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
+        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+      ]);
       callback(200, {
         primary: {
-          shared: utils.processWorkers(results[0], results[1], multiplier, hashrateWindow, true),
-          solo: utils.processWorkers(results[2], results[3], multiplier, hashrateWindow, true),
+          shared: utils.processWorkers(primarySharedShares, primarySharedHash, multiplier, hashrateWindow, true),
+          solo: utils.processWorkers(primarySoloShares, primarySoloHash, multiplier, hashrateWindow, true),
         },
         auxiliary: {
-          shared: utils.processWorkers(results[4], results[5], multiplier, hashrateWindow, true),
-          solo: utils.processWorkers(results[6], results[7], multiplier, hashrateWindow, true),
+          shared: utils.processWorkers(auxiliarySharedShares, auxiliarySharedHash, multiplier, hashrateWindow, true),
+          solo: utils.processWorkers(auxiliarySoloShares, auxiliarySoloHash, multiplier, hashrateWindow, true),
         }
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading workers');
+    }
   };
 
   // API Endpoint for /workers/[worker]
-  this.handleWorkersSpecific = function(pool, worker, callback) {
+  this.handleWorkersSpecific = async function(pool, worker, callback) {
     const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
     const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
     const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
     const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
-    const commands = [
-      ['hgetall', `${ pool }:rounds:primary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:primary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf']];
-    _this.executeCommands(commands, (results) => {
+    try {
+      const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
+             auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
+        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+      ]);
 
-      // Structure Share Data
-      const primarySharedShareData = utils.processShares(results[0], worker, 'worker');
-      const primarySoloShareData = utils.processShares(results[2], worker, 'worker');
-      const auxiliarySharedShareData = utils.processShares(results[4], worker, 'worker');
-      const auxiliarySoloShareData = utils.processShares(results[6], worker, 'worker');
+      const primarySharedShareData = utils.processShares(primarySharedShares, worker, 'worker');
+      const primarySoloShareData = utils.processShares(primarySoloShares, worker, 'worker');
+      const auxiliarySharedShareData = utils.processShares(auxiliarySharedShares, worker, 'worker');
+      const auxiliarySoloShareData = utils.processShares(auxiliarySoloShares, worker, 'worker');
 
-      // Structure Times Data
-      const primarySharedTimesData = utils.processTimes(results[0], worker, 'worker');
-      const auxiliarySharedTimesData = utils.processTimes(results[4], worker, 'worker');
+      const primarySharedTimesData = utils.processTimes(primarySharedShares, worker, 'worker');
+      const auxiliarySharedTimesData = utils.processTimes(auxiliarySharedShares, worker, 'worker');
 
-      // Structure Hashrate Data
-      const primarySharedHashrateData = utils.processWork(results[1], worker, 'worker');
-      const primarySoloHashrateData = utils.processWork(results[3], worker, 'worker');
-      const auxiliarySharedHashrateData = utils.processWork(results[5], worker, 'worker');
-      const auxiliarySoloHashrateData = utils.processWork(results[7], worker, 'worker');
+      const primarySharedHashrateData = utils.processWork(primarySharedHash, worker, 'worker');
+      const primarySoloHashrateData = utils.processWork(primarySoloHash, worker, 'worker');
+      const auxiliarySharedHashrateData = utils.processWork(auxiliarySharedHash, worker, 'worker');
+      const auxiliarySoloHashrateData = utils.processWork(auxiliarySoloHash, worker, 'worker');
 
-      // Structure Share Type Data
-      const primarySharedTypesData = utils.processTypes(results[0], worker, 'worker');
-      const primarySoloTypesData = utils.processTypes(results[2], worker, 'worker');
-      const auxiliarySharedTypesData = utils.processTypes(results[4], worker, 'worker');
-      const auxiliarySoloTypesData = utils.processTypes(results[6], worker, 'worker');
+      const primarySharedTypesData = utils.processTypes(primarySharedShares, worker, 'worker');
+      const primarySoloTypesData = utils.processTypes(primarySoloShares, worker, 'worker');
+      const auxiliarySharedTypesData = utils.processTypes(auxiliarySharedShares, worker, 'worker');
+      const auxiliarySoloTypesData = utils.processTypes(auxiliarySoloShares, worker, 'worker');
 
-      // Build Worker Statistics
       callback(200, {
         primary: {
           hashrate: {
@@ -713,41 +836,46 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
           },
         }
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading worker data');
+    }
   };
 
   // API Endpoint for /workers
-  this.handleWorkers = function(pool, callback) {
+  this.handleWorkers = async function(pool, callback) {
     const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
     const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
     const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
     const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
-    const commands = [
-      ['hgetall', `${ pool }:rounds:primary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:primary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:shared:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'],
-      ['hgetall', `${ pool }:rounds:auxiliary:current:solo:shares`],
-      ['zrangebyscore', `${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf']];
-    _this.executeCommands(commands, (results) => {
+    try {
+      const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
+             auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
+        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
+        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
+        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+      ]);
       callback(200, {
         primary: {
-          shared: utils.processWorkers(results[0], results[1], multiplier, hashrateWindow, false),
-          solo: utils.processWorkers(results[2], results[3], multiplier, hashrateWindow, false),
+          shared: utils.processWorkers(primarySharedShares, primarySharedHash, multiplier, hashrateWindow, false),
+          solo: utils.processWorkers(primarySoloShares, primarySoloHash, multiplier, hashrateWindow, false),
         },
         auxiliary: {
-          shared: utils.processWorkers(results[4], results[5], multiplier, hashrateWindow, false),
-          solo: utils.processWorkers(results[6], results[7], multiplier, hashrateWindow, false),
+          shared: utils.processWorkers(auxiliarySharedShares, auxiliarySharedHash, multiplier, hashrateWindow, false),
+          solo: utils.processWorkers(auxiliarySoloShares, auxiliarySoloHash, multiplier, hashrateWindow, false),
         }
       });
-    }, callback);
+    } catch (err) {
+      callback(500, 'Error reading workers');
+    }
   };
 
-  //////////////////////////////////////////////////////////////////////////////
+  // ==================== EXECUTE COMMANDS (still used for zrangebyscore) ====================
 
-  // Execute Redis Commands
   /* istanbul ignore next */
   this.executeCommands = function(commands, callback, handler) {
     _this.client.multi(commands).exec((error, results) => {
@@ -759,7 +887,7 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     });
   };
 
-  // Build API Payload for each Endpoint
+  // Build API Payload (unchanged)
   this.buildResponse = function(code, message, response) {
     const payload = {
       version: '0.0.3',
@@ -771,129 +899,122 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     response.end(JSON.stringify(payload));
   };
 
-  // Determine API Endpoint Called
+  // Determine API Endpoint Called (unchanged)
   this.handleApiV1 = function(req, callback) {
-
     let pool, endpoint, method;
     const miscellaneous = ['pools'];
 
-    // If Path Params Exist
     if (req.params) {
       pool = utils.validateInput(req.params.pool || '');
       endpoint = utils.validateInput(req.params.endpoint || '');
     }
 
-    // If Query Params Exist
     if (req.query) {
       method = utils.validateInput(req.query.method || '');
     }
 
-    // Check if Requested Pool Exists
     if (!(pool in _this.poolConfigs) && !(miscellaneous.includes(pool))) {
       callback(404, 'The requested pool was not found. Verify your input and try again');
       return;
     }
 
-    // Select Endpoint from Parameters
     switch (true) {
+      // Blocks
+      case (endpoint === 'blocks' && method === 'confirmed'):
+        _this.handleBlocksConfirmed(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'blocks' && method === 'kicked'):
+        _this.handleBlocksKicked(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'blocks' && method === 'pending'):
+        _this.handleBlocksPending(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'blocks' && method === ''):
+        _this.handleBlocks(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'blocks' && method.length >= 1):
+        _this.handleBlocksSpecific(pool, method, (code, message) => callback(code, message));
+        break;
 
-    // Blocks Endpoints
-    case (endpoint === 'blocks' && method === 'confirmed'):
-      _this.handleBlocksConfirmed(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'blocks' && method === 'kicked'):
-      _this.handleBlocksKicked(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'blocks' && method === 'pending'):
-      _this.handleBlocksPending(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'blocks' && method === ''):
-      _this.handleBlocks(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'blocks' && method.length >= 1):
-      _this.handleBlocksSpecific(pool, method, (code, message) => callback(code, message));
-      break;
+      // Historical
+      case (endpoint === 'historical' && method === ''):
+        _this.handleHistorical(pool, (code, message) => callback(code, message));
+        break;
 
-    // Miners Endpoints
-    case (endpoint === 'historical' && method === ''):
-      _this.handleHistorical(pool, (code, message) => callback(code, message));
-      break;
+      // Miners
+      case (endpoint === 'miners' && method === 'active'):
+        _this.handleMinersActive(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'miners' && method.length >= 1):
+        _this.handleMinersSpecific(pool, method, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'miners' && method === ''):
+        _this.handleMiners(pool, (code, message) => callback(code, message));
+        break;
 
-    // Miners Endpoints
-    case (endpoint === 'miners' && method === 'active'):
-      _this.handleMinersActive(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'miners' && method.length >= 1):
-      _this.handleMinersSpecific(pool, method, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'miners' && method === ''):
-      _this.handleMiners(pool, (code, message) => callback(code, message));
-      break;
+      // Payments
+      case (endpoint === 'payments' && method === 'balances'):
+        _this.handlePaymentsBalances(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'payments' && method === 'generate'):
+        _this.handlePaymentsGenerate(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'payments' && method === 'immature'):
+        _this.handlePaymentsImmature(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'payments' && method === 'paid'):
+        _this.handlePaymentsPaid(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'payments' && method === 'records'):
+        _this.handlePaymentsRecords(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'payments' && method === ''):
+        _this.handlePayments(pool, (code, message) => callback(code, message));
+        break;
 
-    // Payments Endpoints
-    case (endpoint === 'payments' && method === 'balances'):
-      _this.handlePaymentsBalances(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'payments' && method === 'generate'):
-      _this.handlePaymentsGenerate(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'payments' && method === 'immature'):
-      _this.handlePaymentsImmature(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'payments' && method === 'paid'):
-      _this.handlePaymentsPaid(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'payments' && method === 'records'):
-      _this.handlePaymentsRecords(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'payments' && method === ''):
-      _this.handlePayments(pool, (code, message) => callback(code, message));
-      break;
+      // Ports
+      case (endpoint === 'ports' && method === ''):
+        callback(200, { ports: _this.poolConfigs[pool].ports });
+        break;
 
-    // Ports Endpoints
-    case (endpoint === 'ports' && method === ''):
-      callback(200, { ports: _this.poolConfigs[pool].ports });
-      break;
+      // Rounds
+      case (endpoint === 'rounds' && method === 'current'):
+        _this.handleRoundsCurrent(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'rounds' && utils.checkNumber(method)):
+        _this.handleRoundsHeight(pool, method, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'rounds' && method === ''):
+        _this.handleRounds(pool, (code, message) => callback(code, message));
+        break;
 
-    // Rounds Endpoints
-    case (endpoint === 'rounds' && method === 'current'):
-      _this.handleRoundsCurrent(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'rounds' && utils.checkNumber(method)):
-      _this.handleRoundsHeight(pool, method, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'rounds' && method === ''):
-      _this.handleRounds(pool, (code, message) => callback(code, message));
-      break;
+      // Statistics
+      case (endpoint === 'statistics' && method === ''):
+        _this.handleStatistics(pool, (code, message) => callback(code, message));
+        break;
 
-    // Statistics Endpoints
-    case (endpoint === 'statistics' && method === ''):
-      _this.handleStatistics(pool, (code, message) => callback(code, message));
-      break;
+      // Workers
+      case (endpoint === 'workers' && method === 'active'):
+        _this.handleWorkersActive(pool, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'workers' && method.length >= 1):
+        _this.handleWorkersSpecific(pool, method, (code, message) => callback(code, message));
+        break;
+      case (endpoint === 'workers' && method === ''):
+        _this.handleWorkers(pool, (code, message) => callback(code, message));
+        break;
 
-    // Workers Endpoints
-    case (endpoint === 'workers' && method === 'active'):
-      _this.handleWorkersActive(pool, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'workers' && method.length >= 1):
-      _this.handleWorkersSpecific(pool, method, (code, message) => callback(code, message));
-      break;
-    case (endpoint === 'workers' && method === ''):
-      _this.handleWorkers(pool, (code, message) => callback(code, message));
-      break;
+      // Miscellaneous
+      case (endpoint === '' && method === '' && pool === 'pools'):
+        callback(200, Object.keys(_this.poolConfigs));
+        break;
+      case (endpoint === '' && method === '' && !(miscellaneous.includes(pool))):
+        _this.handleStatistics(pool, (code, message) => callback(code, message));
+        break;
 
-    // Miscellaneous Endpoints
-    case (endpoint === '' && method === '' && pool === 'pools'):
-      callback(200, Object.keys(_this.poolConfigs));
-      break;
-    case (endpoint === '' && method === '' && !(miscellaneous.includes(pool))):
-      _this.handleStatistics(pool, (code, message) => callback(code, message));
-      break;
-
-    // Unknown Endpoints
-    default:
-      callback(405, 'The requested method is not currently supported. Verify your input and try again');
-      break;
+      default:
+        callback(405, 'The requested method is not currently supported. Verify your input and try again');
+        break;
     }
   };
 };
