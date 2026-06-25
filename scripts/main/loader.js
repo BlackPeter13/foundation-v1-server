@@ -1,6 +1,6 @@
 /*
  *
- * Loader (Updated)
+ * Loader (Updated) – with better error handling and port validation
  *
  */
 
@@ -10,11 +10,12 @@ const Algorithms = require('foundation-stratum').algorithms;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Main Builder Function
+// Main Loader Function
 const PoolLoader = function(logger, portalConfig) {
 
   const _this = this;
   this.portalConfig = portalConfig;
+  this.poolConfigs = {}; // will hold loaded configs
 
   // Validate Pool Algorithms
   this.validatePoolAlgorithms = function(algorithm, name) {
@@ -25,44 +26,55 @@ const PoolLoader = function(logger, portalConfig) {
     return true;
   };
 
-  // Check for Overlapping Pool Names
+  // Check for Overlapping Pool Names (uses a Set for efficiency)
   this.validatePoolNames = function(poolConfigs, poolConfig) {
-    let configNames = Object.keys(poolConfigs);
-    configNames = configNames.concat(poolConfig.name);
-    if (poolConfig.name) {
-      if (poolConfig.name.split(' ').length > 1) {
-        logger.error('Builder', 'Setup', 'Pool names are only allowed to be a single word. Check your configuration files');
-        return false;
-      }
-      if (new Set(configNames).size !== configNames.length) {
-        logger.error('Builder', 'Setup', 'Overlapping pool names. Check your configuration files');
-        return false;
-      }
-      return true;
-    } else {
-      logger.error('Builder', 'Setup', 'No existing pool name passed in. Check your configuration files');
+    const name = poolConfig.name;
+    if (!name) {
+      logger.error('Builder', 'Setup', 'Pool config missing "name" property.');
       return false;
     }
+    if (name.split(' ').length > 1) {
+      logger.error('Builder', 'Setup', `Pool name "${name}" contains spaces – only single words allowed.`);
+      return false;
+    }
+    if (poolConfigs[name]) {
+      logger.error('Builder', 'Setup', `Duplicate pool name "${name}" found.`);
+      return false;
+    }
+    return true;
   };
 
-  // Check for Overlapping Pool Ports
+  // Check for Overlapping Pool Ports (uses a Set)
   this.validatePoolPorts = function(poolConfigs, poolConfig) {
-    const currentPorts = poolConfig.ports.flatMap(config => config.port);
-    let configPorts = Object.values(poolConfigs)
-      .filter(config => config.enabled)
-      .flatMap(config => config.ports)
-      .filter(config => config.enabled)
-      .flatMap(config => config.port);
-    configPorts = configPorts.concat(currentPorts);
-    if (new Set(configPorts).size !== configPorts.length) {
-      logger.error('Builder', 'Setup', 'Overlapping port configuration. Check your configuration files');
-      return false;
-    } else if (configPorts.includes(_this.portalConfig.server.port)) {
-      logger.error('Builder', 'Setup', 'Overlapping port configuration with server port. Check your configuration files');
-      return false;
-    } else if (configPorts.includes(_this.portalConfig.redis.port)) {
-      logger.error('Builder', 'Setup', 'Overlapping port configuration with database port. Check your configuration files');
-      return false;
+    // Collect all ports from already validated pools
+    const usedPorts = new Set();
+    Object.values(poolConfigs).forEach(cfg => {
+      if (cfg.enabled) {
+        cfg.ports.forEach(p => {
+          if (p.enabled) {
+            usedPorts.add(p.port);
+          }
+        });
+      }
+    });
+
+    // Check current pool's ports
+    for (const portConfig of poolConfig.ports) {
+      if (!portConfig.enabled) continue;
+      const port = portConfig.port;
+      if (usedPorts.has(port)) {
+        logger.error('Builder', 'Setup', `Port ${port} is already used by another pool.`);
+        return false;
+      }
+      if (port === _this.portalConfig.server.port) {
+        logger.error('Builder', 'Setup', `Port ${port} conflicts with the server port.`);
+        return false;
+      }
+      if (port === _this.portalConfig.redis.port) {
+        logger.error('Builder', 'Setup', `Port ${port} conflicts with the Redis port.`);
+        return false;
+      }
+      usedPorts.add(port);
     }
     return true;
   };
@@ -72,17 +84,14 @@ const PoolLoader = function(logger, portalConfig) {
     if (poolConfig.primary.recipients && poolConfig.primary.recipients.length >= 1) {
       const recipientTotal = poolConfig.primary.recipients.reduce((p_sum, a) => p_sum + a.percentage, 0);
       if (recipientTotal >= 1) {
-        logger.error('Builder', 'Setup', `Recipient percentage for ${ poolConfig.name } is greater than 100%. Check your configuration files`);
+        logger.error('Builder', 'Setup', `Recipient percentage for ${ poolConfig.name } is ≥ 100%. Check your configuration.`);
         return false;
       } else if (recipientTotal >= 0.4) {
-        logger.warning('Builder', 'Setup', `Recipient percentage for ${ poolConfig.name } is greater than 40%. Are you sure that you configured it properly?`);
-        return true;
-      } else {
+        logger.warning('Builder', 'Setup', `Recipient percentage for ${ poolConfig.name } is > 40%. Are you sure that you configured it properly?`);
         return true;
       }
-    } else {
-      return true;
     }
+    return true;
   };
 
   // Check for Valid Portal TLS Files
@@ -103,7 +112,7 @@ const PoolLoader = function(logger, portalConfig) {
   this.validatePoolTLS = function(poolConfig, portalConfig) {
     const tlsCount = poolConfig.ports
       .filter(config => config.enabled)
-      .filter(config => config ? config.tls : false).length;
+      .filter(config => config.tls).length;
     if (tlsCount >= 1) {
       const keyExists = fs.existsSync(`./certificates/${ portalConfig.tls.key }`) && portalConfig.tls.key.length >= 1;
       const certExists = fs.existsSync(`./certificates/${ portalConfig.tls.cert }`) && portalConfig.tls.cert.length >= 1;
@@ -115,19 +124,14 @@ const PoolLoader = function(logger, portalConfig) {
     return true;
   };
 
-  // Validate Pool Settings
+  // Validate Pool Settings (historical retention)
   this.validatePoolVariables = function(poolConfig) {
-
-    // Establish Statistics Variables
     const historicalInterval = poolConfig.statistics.historicalInterval || 1800;
     const historicalWindow = poolConfig.statistics.historicalWindow || 86400;
-
-    // Check Historical Settings
     if (historicalWindow / historicalInterval >= 50) {
-      logger.error('Builder', 'Setup', 'Historical retention must be limited to <= 50 records. Check your configuration files.');
+      logger.error('Builder', 'Setup', `Historical retention for ${poolConfig.name} must be limited to ≤ 50 records. Check your configuration.`);
       return false;
     }
-
     return true;
   };
 
@@ -148,17 +152,48 @@ const PoolLoader = function(logger, portalConfig) {
   this.buildPoolConfigs = function() {
     const poolConfigs = {};
     const normalizedPath = path.join(__dirname, '../../configs/pools/');
-    fs.readdirSync(normalizedPath).forEach(file => {
-      if (!fs.existsSync(normalizedPath + file) || path.extname(normalizedPath + file) !== '.js') {
-        return;
+
+    // Read all files in the pools directory
+    let files;
+    try {
+      files = fs.readdirSync(normalizedPath);
+    } catch (err) {
+      logger.error('Builder', 'Setup', `Failed to read pool config directory: ${err.message}`);
+      return poolConfigs;
+    }
+
+    for (const file of files) {
+      const fullPath = path.join(normalizedPath, file);
+      // Only process .js files
+      if (path.extname(file) !== '.js') continue;
+      if (!fs.existsSync(fullPath)) continue; // redundant but safe
+
+      let poolConfig;
+      try {
+        poolConfig = require(fullPath);
+      } catch (err) {
+        logger.error('Builder', 'Setup', `Failed to load pool config "${file}": ${err.message}`);
+        continue;
       }
-      const poolConfig = require(normalizedPath + file);
-      if (!_this.validatePoolConfigs(poolConfig)) return;
-      if (!_this.validatePoolTLS(poolConfig, portalConfig)) return;
-      if (!_this.validatePoolNames(poolConfigs, poolConfig)) return;
-      if (!_this.validatePoolPorts(poolConfigs, poolConfig)) return;
+
+      // Basic existence checks
+      if (!poolConfig || typeof poolConfig !== 'object') {
+        logger.error('Builder', 'Setup', `Pool config "${file}" did not export an object.`);
+        continue;
+      }
+
+      // Validate the config
+      if (!_this.validatePoolConfigs(poolConfig)) continue;
+      if (!_this.validatePoolTLS(poolConfig, _this.portalConfig)) continue;
+      if (!_this.validatePoolNames(poolConfigs, poolConfig)) continue;
+      if (!_this.validatePoolPorts(poolConfigs, poolConfig)) continue;
+
+      // Store it
       poolConfigs[poolConfig.name] = poolConfig;
-    });
+      logger.info('Builder', 'Setup', `Loaded pool "${poolConfig.name}" from ${file}`);
+    }
+
+    _this.poolConfigs = poolConfigs;
     return poolConfigs;
   };
 };
