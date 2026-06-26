@@ -16,9 +16,10 @@ NODE_VERSION="14.21.3"
 NODE_DISTRO="linux-x64"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 
-# Stratum version to use (optimized)
+# Stratum version to use – change to a tag or commit SHA if you prefer.
+# Default: master branch (latest commit)
 STRATUM_REPO="https://github.com/BlackPeter13/foundation-v1-stratum.git"
-STRATUM_VERSION="v0.1.0"   # tag or branch
+STRATUM_VERSION="master"   # or use "v0.1.0" once the tag exists
 
 # ---------- Determine the real user ----------
 if [ -n "${SUDO_USER:-}" ]; then
@@ -247,5 +248,5 @@ log_info "3. Restart after changes: sudo systemctl restart foundation-server"
 log_info "4. View logs: sudo journalctl -u foundation-server -f"
 log_info "5. Swap file (16GB) is active."
 log_info "6. Redis tuned for performance."
-log_info "7. Stratum module is now the optimized v0.1.0 from your fork."
+log_info "7. Stratum module is now the optimized version from $STRATUM_REPO#$STRATUM_VERSION."
 log_info "--------------------------------------------------"
