@@ -55,7 +55,7 @@
     "dateformat": "4.6.3",
     "express": "4.21.2",
     "express-rate-limit": "^7.4.0",
-    "foundation-stratum": "git+https://github.com/BlackPeter13/foundation-v1-stratum.git#master",
+    "foundation-stratum": "git+https://github.com/BlackPeter13/foundation-v1-stratum.git#v0.1.0",
     "nodemon": "2.0.17",
     "redis": "^4.7.0"
   },
