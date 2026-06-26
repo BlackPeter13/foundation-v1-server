@@ -1,5 +1,5 @@
 #!/bin/bash
-# foundation-v1-server setup – Node.js 14 + npm v7 (clean install) + systemd
+# foundation-v1-server setup – Node.js 14 + npm v7 + optimized stratum
 # Run with: sudo ./setup.sh
 # For CI: set SKIP_CLONE=true and APP_DIR="$PWD"
 
@@ -15,6 +15,10 @@ REDIS_TCP_KEEPALIVE=60
 NODE_VERSION="14.21.3"
 NODE_DISTRO="linux-x64"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
+
+# Stratum version to use (optimized)
+STRATUM_REPO="https://github.com/BlackPeter13/foundation-v1-stratum.git"
+STRATUM_VERSION="v0.1.0"   # tag or branch
 
 # ---------- Determine the real user ----------
 if [ -n "${SUDO_USER:-}" ]; then
@@ -69,22 +73,18 @@ log_info "Node version: $node_version"
 
 # ---------- CLEAN INSTALL npm v7 ----------
 log_info "Removing old npm and installing v7.24.2..."
-# Remove any existing npm and related symlinks
 sudo rm -rf /usr/local/lib/node_modules/npm
 sudo rm -f /usr/local/bin/npm /usr/local/bin/npx
 
-# Download and extract npm v7
 cd /tmp
 curl -L https://registry.npmjs.org/npm/-/npm-7.24.2.tgz -o npm-7.24.2.tgz
 sudo mkdir -p /usr/local/lib/node_modules/npm
 sudo tar -xzf npm-7.24.2.tgz -C /usr/local/lib/node_modules/npm --strip-components=1
 rm npm-7.24.2.tgz
 
-# Create symlinks
 sudo ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 sudo ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# Verify
 npm_version=$(npm -v)
 log_info "npm version (new): $npm_version"
 
@@ -127,6 +127,30 @@ else
         log_error "APP_DIR ($APP_DIR) does not exist, but SKIP_CLONE is true. Aborting."
     fi
 fi
+
+# ---------- UPDATE PACKAGE.JSON to use optimized stratum ----------
+log_info "Updating server's package.json to use optimized stratum..."
+cd "$APP_DIR"
+PKG_FILE="$APP_DIR/package.json"
+
+# Backup original
+sudo -u "$REAL_USER" cp "$PKG_FILE" "$PKG_FILE.bak"
+
+# Use jq if available, otherwise sed
+if command -v jq &> /dev/null; then
+    sudo -u "$REAL_USER" jq --arg url "$STRATUM_REPO#$STRATUM_VERSION" \
+        '.dependencies["foundation-stratum"] = $url' "$PKG_FILE" > "$PKG_FILE.tmp"
+    sudo -u "$REAL_USER" mv "$PKG_FILE.tmp" "$PKG_FILE"
+    log_info "package.json updated with jq"
+else
+    # Fallback to sed – more complex but works
+    sudo -u "$REAL_USER" sed -i \
+        's|"foundation-stratum": "[^"]*"|"foundation-stratum": "git+'"$STRATUM_REPO"'#'"$STRATUM_VERSION"'"|' \
+        "$PKG_FILE"
+    log_info "package.json updated with sed"
+fi
+
+log_info "Updated dependency: foundation-stratum -> $STRATUM_REPO#$STRATUM_VERSION"
 
 # ---------- Install dependencies with C++14 flag ----------
 log_info "Installing npm dependencies (forcing C++14 for native addon)..."
@@ -223,4 +247,5 @@ log_info "3. Restart after changes: sudo systemctl restart foundation-server"
 log_info "4. View logs: sudo journalctl -u foundation-server -f"
 log_info "5. Swap file (16GB) is active."
 log_info "6. Redis tuned for performance."
+log_info "7. Stratum module is now the optimized v0.1.0 from your fork."
 log_info "--------------------------------------------------"
