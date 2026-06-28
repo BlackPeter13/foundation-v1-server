@@ -71,14 +71,25 @@ const main = async function() {
   // 2. Load pool configs
   const poolsDir = path.join(__dirname, '../configs/pools');
   const loader = new PoolLoader(logger);
-  const poolConfigs = loader.buildPoolConfigs(poolsDir, mainConfig);
+  const poolConfigsArray = loader.buildPoolConfigs(poolsDir, mainConfig);
 
-  if (!poolConfigs || poolConfigs.length === 0) {
+  if (!poolConfigsArray || poolConfigsArray.length === 0) {
     safeLog('error', 'Main', 'Init', 'No pools loaded. Exiting.');
     process.exit(1);
   }
 
-  safeLog('info', 'Main', 'Init', `Loaded ${poolConfigs.length} pool(s).`);
+  // ----- FIX: Convert array to object keyed by pool name -----
+  const poolConfigs = {};
+  poolConfigsArray.forEach(pc => {
+    if (pc.name) {
+      poolConfigs[pc.name] = pc;
+    } else {
+      safeLog('warn', 'Main', 'Pool config missing name field', pc);
+    }
+  });
+  // -----------------------------------------------------------
+
+  safeLog('info', 'Main', 'Init', `Loaded ${Object.keys(poolConfigs).length} pool(s).`);
 
   // 3. Initialize Redis
   const redisOptions = {
@@ -113,10 +124,7 @@ const main = async function() {
   const app = express();
   const PORT = mainConfig.portal?.port || 3001;
 
-  // Enable CORS for all routes (so frontend can access from different port)
   app.use(cors());
-
-  // JSON body parser (if needed)
   app.use(express.json());
 
   // 5. Mount the API
@@ -136,28 +144,26 @@ const main = async function() {
     });
   });
 
-  // Optional: serve static frontend if you place it in 'public/'
+  // Serve static frontend if public folder exists
   const publicDir = path.join(__dirname, '../public');
   if (fs.existsSync(publicDir)) {
     app.use(express.static(publicDir));
     safeLog('info', 'Web', `Serving static files from ${publicDir}`);
   }
 
-  // Health check
   app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: Date.now() });
   });
 
-  // Start Express server
   app.listen(PORT, () => {
     safeLog('info', 'Web', `API server listening on http://localhost:${PORT}/api/v1`);
   });
 
   // 6. Start the stratum pools
-  for (const poolConfig of poolConfigs) {
+  for (const poolName in poolConfigs) {
+    const poolConfig = poolConfigs[poolName];
     try {
       const authorizeFn = function(ip, port, addrPrimary, addrAuxiliary, password, callback) {
-        // Basic authorization – replace with your own logic
         callback({ error: null, authorized: true });
       };
       const responseFn = function(data) {
