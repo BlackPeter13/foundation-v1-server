@@ -1,83 +1,115 @@
 /*
  *
- * Main entry – scripts/main.js
+ * Main (Updated)
  *
+ * Entry point for the Foundation pool server.
+ * Loads configurations, initializes the pool, and starts the stratum server.
  */
 
 const path = require('path');
-
-const PoolDatabase = require('./main/database');
+const fs = require('fs');
 const PoolLoader = require('./main/loader');
-const PoolLogger = require('./main/logger');
-const PoolBuilder = require('./main/builder');
+const Pool = require('foundation-stratum');
 
-// ----------------------------------------------------------------------
-// 1. Load portal config (adjust path if needed)
-// ----------------------------------------------------------------------
-let config;
+// -----------------------------------------------------------------------------
+// Logger – minimal fallback if no logger module exists
+// -----------------------------------------------------------------------------
+
+// Try to load a custom logger; if not available, use console.
+let logger;
 try {
-  config = require('../configs/main/config.js');
+  logger = require('./logger');
+  if (typeof logger.info !== 'function') {
+    // If the logger doesn't have .info, treat it as a plain object and wrap it
+    const original = logger;
+    logger = {
+      info: (...args) => console.log('[INFO]', ...args),
+      warn: (...args) => console.warn('[WARN]', ...args),
+      error: (...args) => console.error('[ERROR]', ...args),
+      debug: (...args) => console.debug('[DEBUG]', ...args),
+      ...original
+    };
+  }
 } catch (e) {
-  console.error('Unable to find config.js. Read installation instructions.');
+  // No logger module – use console with prefixes
+  logger = {
+    info: (...args) => console.log('[INFO]', ...args),
+    warn: (...args) => console.warn('[WARN]', ...args),
+    error: (...args) => console.error('[ERROR]', ...args),
+    debug: (...args) => console.debug('[DEBUG]', ...args),
+  };
+}
+
+// Helper to safely call logger methods (in case they are still missing)
+function safeLog(method, ...args) {
+  if (logger && typeof logger[method] === 'function') {
+    return logger[method](...args);
+  }
+  // Fallback to console
+  const prefix = method.toUpperCase();
+  console.log(`[${prefix}]`, ...args);
+}
+
+// -----------------------------------------------------------------------------
+// Main
+// -----------------------------------------------------------------------------
+
+const main = async function() {
+
+  // 1. Load main config (configs/main/config.js)
+  const mainConfigPath = path.join(__dirname, '../configs/main/config.js');
+  let mainConfig;
+  try {
+    delete require.cache[require.resolve(mainConfigPath)];
+    mainConfig = require(mainConfigPath);
+    safeLog('info', 'Main', 'Config', `Loaded main config from ${mainConfigPath}`);
+  } catch (err) {
+    safeLog('error', 'Main', 'Config', `Failed to load main config: ${err.message}`);
+    process.exit(1);
+  }
+
+  // 2. Load pool configs
+  const poolsDir = path.join(__dirname, '../configs/pools');
+  const loader = new PoolLoader(logger);
+  const poolConfigs = loader.buildPoolConfigs(poolsDir, mainConfig);
+
+  if (!poolConfigs || poolConfigs.length === 0) {
+    safeLog('error', 'Main', 'Init', 'No pools loaded. Exiting.');
+    process.exit(1);
+  }
+
+  // Fixed: use backticks for template literal
+  safeLog('info', 'Main', 'Init', `Loaded ${Object.keys(poolConfigs).length} pool(s).`);
+
+  // 3. Initialize each pool
+  for (const poolConfig of poolConfigs) {
+    try {
+      // Create a stratum server for this pool
+      // The authorizeFn and responseFn are callbacks – adjust as needed.
+      const authorizeFn = function(ip, port, addrPrimary, addrAuxiliary, password, callback) {
+        // Basic authorization – you can replace with your own logic
+        callback({ error: null, authorized: true });
+      };
+      const responseFn = function(data) {
+        // Handle responses (e.g., send to portal)
+        safeLog('debug', 'Pool', 'Response', data);
+      };
+
+      const pool = Pool.create(poolConfig, mainConfig.portal || {}, authorizeFn, responseFn);
+      safeLog('info', 'Pool', 'Started', `Pool ${poolConfig.name} started successfully.`);
+    } catch (err) {
+      safeLog('error', 'Pool', 'Start', `Failed to start pool ${poolConfig.name}: ${err.message}`);
+    }
+  }
+
+  safeLog('info', 'Main', 'Init', 'All pools initialized. Server is running.');
+};
+
+// -----------------------------------------------------------------------------
+// Run
+// -----------------------------------------------------------------------------
+
+main().catch((err) => {
+  safeLog('error', 'Main', 'Fatal', err.stack || err.message);
   process.exit(1);
-}
-
-// ----------------------------------------------------------------------
-// 2. Setup logger
-// ----------------------------------------------------------------------
-const logger = new PoolLogger(config);
-
-// ----------------------------------------------------------------------
-// 3. Setup database (Redis)
-// ----------------------------------------------------------------------
-const database = new PoolDatabase(config);
-const loader = new PoolLoader(logger, config);
-
-// Validate TLS if needed
-if ((config.redis.tls || config.server.tls) && !loader.validatePortalTLS(config)) {
-  throw new Error('Invalid TLS files.');
-}
-
-const client = database.buildRedisClient({ detect_buffers: true });
-client.on('error', () => {
-  throw new Error('Redis connection failed.');
 });
-database.checkRedisClient(client);
-
-// ----------------------------------------------------------------------
-// 4. Load and validate pool configurations
-// ----------------------------------------------------------------------
-const poolConfigs = loader.buildPoolConfigs();
-if (Object.keys(poolConfigs).length === 0) {
-  logger.error('Main', 'Init', 'No pools loaded.');
-  process.exit(1);
-}
-logger.info('Main', 'Init', `Loaded ${Object.keys(poolConfigs).length} pool(s).`);
-
-// ----------------------------------------------------------------------
-// 5. Start the builder (cluster manager)
-// ----------------------------------------------------------------------
-const builder = new PoolBuilder(logger, config);
-builder.poolConfigs = poolConfigs;
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('Main', 'Master', 'SIGTERM received – shutting down.');
-  builder.shutdown();
-});
-process.on('SIGINT', () => {
-  logger.info('Main', 'Master', 'SIGINT received – shutting down.');
-  builder.shutdown();
-});
-
-// Global error handlers (keep master alive)
-process.on('uncaughtException', (err) => {
-  logger.error('Main', 'Master', `Uncaught exception: ${err.stack}`);
-});
-process.on('unhandledRejection', (reason) => {
-  logger.error('Main', 'Master', `Unhandled rejection: ${reason}`);
-});
-
-// Start the pool!
-logger.info('Main', 'Master', 'Starting pool builder...');
-builder.init();
