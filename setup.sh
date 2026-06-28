@@ -162,6 +162,37 @@ coverage/
 .DS_Store
 EOF
 
+# ---------- Create .eslintrc.js ----------
+log_info "Creating .eslintrc.js configuration file..."
+sudo -u "$REAL_USER" cat > "$APP_DIR/.eslintrc.js" << 'EOF'
+module.exports = {
+  'env': {
+    'browser': true,
+    'node': true,
+    'jest': true,
+    'es2021': true
+  },
+  'extends': 'eslint:recommended',
+  'parserOptions': {
+    'ecmaVersion': 12,
+    'sourceType': 'module'
+  },
+  'rules': {
+    'no-var': 2,
+    'semi': [2, 'always'],
+    'indent': ['error', 2],
+    'no-multi-spaces': 2,
+    'space-in-parens': 2,
+    'quotes': [2, 'single'],
+    'brace-style': [2, '1tbs'],
+    'no-multiple-empty-lines': 2,
+    'prefer-const': 2,
+    'prefer-arrow-callback': 2,
+    'no-use-before-define': 2
+  }
+};
+EOF
+
 # ---------- UPDATE PACKAGE.JSON to use optimized stratum ----------
 log_info "Updating server's package.json to use optimized stratum..."
 cd "$APP_DIR"
@@ -282,5 +313,5 @@ log_info "4. View logs: sudo journalctl -u foundation-server -f"
 log_info "5. Swap file (16GB) is active."
 log_info "6. Redis tuned for performance."
 log_info "7. Stratum module is now the optimized version from $STRATUM_REPO#$STRATUM_VERSION."
-log_info "8. .gitignore file has been created in the repository root."
+log_info "8. .gitignore and .eslintrc.js have been created in the repository."
 log_info "--------------------------------------------------"
