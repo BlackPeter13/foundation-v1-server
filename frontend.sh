@@ -62,7 +62,6 @@ start_dashboard() {
     if command -v pm2 &> /dev/null; then
         # Use PM2 with the isolated Node
         PM2_BIN=$(which pm2)
-        # We need to tell PM2 to use the isolated node as the interpreter
         sudo -E env "PATH=$NODE_INSTALL_DIR/bin:$PATH" $PM2_BIN start $NODE_BIN server.js --name mining-dashboard --interpreter $NODE_BIN
         log_info "Dashboard started with PM2 (use 'pm2 logs mining-dashboard' to see logs)"
     else
@@ -105,11 +104,12 @@ REFRESH_INTERVAL=$REFRESH_INTERVAL
 PORT=$PORT
 EOF
 
-    # Write package.json, server.js, CSS, JS, etc. (same as before)
+    # Write package.json – FIXED: added "type": "module"
     cat > package.json << 'PKGEOF'
 {
   "name": "foundation-mining-dashboard",
   "version": "1.0.0",
+  "type": "module",
   "description": "Real-time mining pool dashboard for foundation-v1-server",
   "main": "server.js",
   "scripts": {
@@ -136,6 +136,7 @@ EOF
 }
 PKGEOF
 
+    # Write server.js, CSS, JS, etc. (same as before)
     cat > server.js << 'SERVEOF'
 import express from 'express';
 import path from 'path';
@@ -214,7 +215,7 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.listen(port, () => console.log(`Dashboard running at http://localhost:${port}`));
 SERVEOF
 
-    # CSS, JS, cache, tests, README (same as before)
+    # CSS
     cat > public/css/style.css << 'CSSEOF'
 :root { --primary: #1a1a2e; --secondary: #16213e; --accent: #0f3460; --highlight: #e94560; --success: #2ecc71; --warning: #f1c40f; --danger: #e74c3c; --text: #eee; --card-bg: #1e2a4a; --border-radius: 8px; --shadow: 0 4px 12px rgba(0,0,0,0.3); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -254,6 +255,7 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 @media (max-width: 768px) { .header { flex-direction: column; align-items: stretch; gap: 0.5rem; } .stats-grid { grid-template-columns: repeat(2,1fr); } .grid, .skeleton-grid { grid-template-columns: 1fr; } }
 CSSEOF
 
+    # JS
     cat > public/js/app.js << 'APPEOF'
 import { getCachedData, setCachedData } from './utils/cache.js';
 const API_BASE = window.__env?.API_BASE_URL || 'http://localhost:3001/api/v1';
@@ -322,7 +324,7 @@ A real-time dashboard for foundation-v1-server. Features: live stats, miners lis
 `pm2 start server.js --name mining-dashboard`
 READEOM
 
-    # Install dependencies using isolated Node.js – FIX: run npm with isolated node
+    # Install dependencies using isolated Node.js
     log_info "Installing npm dependencies (using isolated Node.js 18)..."
     $NODE_INSTALL_DIR/bin/node $NODE_INSTALL_DIR/bin/npm install
 
