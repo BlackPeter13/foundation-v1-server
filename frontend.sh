@@ -62,6 +62,7 @@ start_dashboard() {
     if command -v pm2 &> /dev/null; then
         # Use PM2 with the isolated Node
         PM2_BIN=$(which pm2)
+        # We need to tell PM2 to use the isolated node as the interpreter
         sudo -E env "PATH=$NODE_INSTALL_DIR/bin:$PATH" $PM2_BIN start $NODE_BIN server.js --name mining-dashboard --interpreter $NODE_BIN
         log_info "Dashboard started with PM2 (use 'pm2 logs mining-dashboard' to see logs)"
     else
@@ -321,9 +322,9 @@ A real-time dashboard for foundation-v1-server. Features: live stats, miners lis
 `pm2 start server.js --name mining-dashboard`
 READEOM
 
-    # Install dependencies using isolated npm
+    # Install dependencies using isolated Node.js – FIX: run npm with isolated node
     log_info "Installing npm dependencies (using isolated Node.js 18)..."
-    $NODE_INSTALL_DIR/bin/npm install
+    $NODE_INSTALL_DIR/bin/node $NODE_INSTALL_DIR/bin/npm install
 
     # Start the dashboard using isolated Node.js
     log_info "Starting the dashboard..."
