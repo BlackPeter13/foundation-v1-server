@@ -1,6 +1,6 @@
 #!/bin/bash
 # frontend-setup.sh – creates and runs the Foundation Mining Dashboard
-# Run with: ./frontend-setup.sh
+# Uses an isolated Node.js 18 installation (does not affect the pool's Node 14)
 
 set -euo pipefail
 
@@ -9,35 +9,30 @@ DASHBOARD_DIR="$HOME/Desktop/foundation-mining-dashboard"
 NODE_VERSION="18.20.8"
 NODE_DISTRO="linux-x64"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
+NODE_INSTALL_DIR="/opt/nodejs-18"   # isolated from system
 
 # Color helpers
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 log_warn()  { echo -e "\033[1;33m[WARN]\033[0m $1"; }
 log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; exit 1; }
 
-# ---------- Ensure Node.js 18+ ----------
-install_nodejs() {
-    log_info "Installing Node.js ${NODE_VERSION} from official binary..."
-    cd /tmp
-    wget -q "$NODE_URL"
-    sudo tar -xJf "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz" -C /usr/local --strip-components=1
-    rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
-    export PATH="/usr/local/bin:$PATH"
-    log_info "Node.js installed: $(node -v)"
-}
-
-check_node() {
-    if ! command -v node &> /dev/null; then
-        log_warn "Node.js not found. Installing Node.js ${NODE_VERSION}..."
-        install_nodejs
+# ---------- Install isolated Node.js 18 ----------
+install_nodejs18() {
+    if [ -d "$NODE_INSTALL_DIR/bin" ]; then
+        log_info "Node.js 18 already installed in $NODE_INSTALL_DIR"
         return
     fi
-    NODE_MAJOR=$(node -v | cut -d. -f1 | sed 's/v//')
-    if [ "$NODE_MAJOR" -lt 18 ]; then
-        log_warn "Node.js version $NODE_MAJOR detected (requires >=18). Upgrading to ${NODE_VERSION}..."
-        install_nodejs
+    log_info "Installing Node.js ${NODE_VERSION} into $NODE_INSTALL_DIR..."
+    sudo mkdir -p "$NODE_INSTALL_DIR"
+    cd /tmp
+    wget -q "$NODE_URL"
+    sudo tar -xJf "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz" -C "$NODE_INSTALL_DIR" --strip-components=1
+    rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
+    # Verify
+    if [ -x "$NODE_INSTALL_DIR/bin/node" ]; then
+        log_info "Node.js installed: $($NODE_INSTALL_DIR/bin/node -v)"
     else
-        log_info "Node.js version: $(node -v) – OK"
+        log_error "Node.js installation failed."
     fi
 }
 
@@ -54,24 +49,31 @@ ask_env_vars() {
     PORT=${PORT:-8080}
 }
 
-# ---------- Start dashboard ----------
+# ---------- Start dashboard using isolated Node.js ----------
 start_dashboard() {
     cd "$DASHBOARD_DIR"
-    log_info "Starting dashboard..."
+    log_info "Starting dashboard with Node.js 18 from $NODE_INSTALL_DIR..."
 
+    # Use isolated node/npm
+    NODE_BIN="$NODE_INSTALL_DIR/bin/node"
+    NPM_BIN="$NODE_INSTALL_DIR/bin/npm"
+
+    # Check if PM2 is available (system-wide)
     if command -v pm2 &> /dev/null; then
-        pm2 start server.js --name mining-dashboard
+        # Use PM2 with the isolated Node
+        PM2_BIN=$(which pm2)
+        sudo -E env "PATH=$NODE_INSTALL_DIR/bin:$PATH" $PM2_BIN start $NODE_BIN server.js --name mining-dashboard --interpreter $NODE_BIN
         log_info "Dashboard started with PM2 (use 'pm2 logs mining-dashboard' to see logs)"
     else
-        log_warn "PM2 not found. Starting with npm (will run in foreground)."
-        log_info "Press Ctrl+C to stop, or run in background with 'npm start &'"
-        npm start
+        # Run directly with nohup using isolated Node
+        nohup $NODE_BIN server.js > dashboard.log 2>&1 &
+        log_info "Dashboard started in background (log: $DASHBOARD_DIR/dashboard.log)."
+        log_info "To stop: pkill -f 'node.*server.js'"
     fi
 }
 
 # ---------- Show IP and port ----------
 show_url() {
-    # Get primary IP (first non-loopback IPv4)
     IP=$(ip route get 1 2>/dev/null | awk '{print $NF; exit}' || hostname -I | awk '{print $1}')
     if [ -z "$IP" ]; then
         IP="localhost"
@@ -83,8 +85,8 @@ show_url() {
 
 # ---------- Main ----------
 main() {
-    # 1. Check Node.js
-    check_node
+    # 1. Install isolated Node.js 18
+    install_nodejs18
 
     # 2. Ask for .env configuration
     ask_env_vars
@@ -102,7 +104,7 @@ REFRESH_INTERVAL=$REFRESH_INTERVAL
 PORT=$PORT
 EOF
 
-    # Write other files (package.json, server.js, etc.)
+    # Write package.json, server.js, CSS, JS, etc. (same as before)
     cat > package.json << 'PKGEOF'
 {
   "name": "foundation-mining-dashboard",
@@ -211,7 +213,7 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.listen(port, () => console.log(`Dashboard running at http://localhost:${port}`));
 SERVEOF
 
-    # Create CSS, JS, cache, etc. (abbreviated – include all from previous version)
+    # CSS, JS, cache, tests, README (same as before)
     cat > public/css/style.css << 'CSSEOF'
 :root { --primary: #1a1a2e; --secondary: #16213e; --accent: #0f3460; --highlight: #e94560; --success: #2ecc71; --warning: #f1c40f; --danger: #e74c3c; --text: #eee; --card-bg: #1e2a4a; --border-radius: 8px; --shadow: 0 4px 12px rgba(0,0,0,0.3); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -319,34 +321,20 @@ A real-time dashboard for foundation-v1-server. Features: live stats, miners lis
 `pm2 start server.js --name mining-dashboard`
 READEOM
 
-    # Install dependencies
-    log_info "Installing npm dependencies..."
-    npm install
+    # Install dependencies using isolated npm
+    log_info "Installing npm dependencies (using isolated Node.js 18)..."
+    $NODE_INSTALL_DIR/bin/npm install
 
-    # Start the dashboard
+    # Start the dashboard using isolated Node.js
     log_info "Starting the dashboard..."
-    if command -v pm2 &> /dev/null; then
-        pm2 start server.js --name mining-dashboard
-        log_info "Dashboard started with PM2 (use 'pm2 logs mining-dashboard' to see logs)"
-    else
-        # Attempt to run in background with nohup
-        nohup npm start > dashboard.log 2>&1 &
-        log_info "Dashboard started in background (log: $DASHBOARD_DIR/dashboard.log)."
-        log_info "To stop: pkill -f 'node server.js'"
-    fi
+    start_dashboard
 
     # Show URL
-    IP=$(ip route get 1 2>/dev/null | awk '{print $NF; exit}' || hostname -I | awk '{print $1}')
-    if [ -z "$IP" ]; then
-        IP="localhost"
-    fi
-    echo ""
-    log_info "Dashboard is accessible at: http://$IP:$PORT"
-    log_info "If you are on the same machine, also: http://localhost:$PORT"
+    show_url
     echo ""
     log_info "Setup complete! Dashboard running in background."
     log_info "To view logs: tail -f $DASHBOARD_DIR/dashboard.log (if using nohup)"
-    log_info "To stop: pkill -f 'node server.js' (if not using PM2)"
+    log_info "To stop: pkill -f 'node.*server.js' (if using nohup) or pm2 stop mining-dashboard"
 }
 
 main
