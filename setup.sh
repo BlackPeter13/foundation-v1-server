@@ -129,6 +129,39 @@ else
     fi
 fi
 
+# ---------- Create .gitignore ----------
+log_info "Creating .gitignore file..."
+sudo -u "$REAL_USER" cat > "$APP_DIR/.gitignore" << 'EOF'
+# Dependencies
+node_modules/
+
+# IDE
+.idea/
+
+# Logs
+npm-debug.log
+
+# Local config (sensitive data)
+config.json
+
+# Configs – ignore everything except example files
+configs/main/*
+!configs/main/example.js
+
+configs/pools/*
+!configs/pools/example.js
+
+# Certificates – ignore everything except README
+certificates/*
+!certificates/README.md
+
+# Test coverage
+coverage/
+
+# macOS metadata
+.DS_Store
+EOF
+
 # ---------- UPDATE PACKAGE.JSON to use optimized stratum ----------
 log_info "Updating server's package.json to use optimized stratum..."
 cd "$APP_DIR"
@@ -249,4 +282,5 @@ log_info "4. View logs: sudo journalctl -u foundation-server -f"
 log_info "5. Swap file (16GB) is active."
 log_info "6. Redis tuned for performance."
 log_info "7. Stratum module is now the optimized version from $STRATUM_REPO#$STRATUM_VERSION."
+log_info "8. .gitignore file has been created in the repository root."
 log_info "--------------------------------------------------"
