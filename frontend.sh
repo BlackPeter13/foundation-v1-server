@@ -9,9 +9,8 @@ DASHBOARD_DIR="$HOME/Desktop/foundation-mining-dashboard"
 NODE_VERSION="18.20.8"
 NODE_DISTRO="linux-x64"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
-NODE_INSTALL_DIR="/opt/nodejs-18"   # isolated from system
+NODE_INSTALL_DIR="/opt/nodejs-18"
 
-# Color helpers
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 log_warn()  { echo -e "\033[1;33m[WARN]\033[0m $1"; }
 log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; exit 1; }
@@ -42,7 +41,7 @@ ask_env_vars() {
     read -p "API Base URL (e.g., http://localhost:3001/api/v1): " API_BASE_URL
     API_BASE_URL=${API_BASE_URL:-http://localhost:3001/api/v1}
     read -p "Pool name (e.g., XRO, BTC, etc.): " DEFAULT_POOL
-    DEFAULT_POOL=${DEFAULT_POOL:-XRO}
+    DEFAULT_POOL=${DEFAULT_POOL:-BCA}
     read -p "Refresh interval in ms (default: 30000): " REFRESH_INTERVAL
     REFRESH_INTERVAL=${REFRESH_INTERVAL:-30000}
     read -p "Dashboard port (default: 8080): " PORT
@@ -234,7 +233,7 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 CSSEOF
 
     cat > public/js/app.js << 'APPEOF'
-// FIXED – uses actual pool API endpoints
+// dashboard frontend – with debugging and proper error handling
 const API_BASE = window.__env?.API_BASE_URL || 'http://localhost:3001/api/v1';
 const DEFAULT_POOL = window.__env?.DEFAULT_POOL || 'XRO';
 const REFRESH_INTERVAL = window.__env?.REFRESH_INTERVAL || 30000;
@@ -255,8 +254,8 @@ let allMiners = [];
 let refreshTimer = null;
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Display pool name
   if (elements.poolName) elements.poolName.textContent = DEFAULT_POOL;
+  console.log('Dashboard starting – pool:', DEFAULT_POOL, 'API base:', API_BASE);
   init();
 });
 
@@ -272,26 +271,39 @@ function setupEventListeners() {
 
 async function loadPoolData() {
   showLoading();
-  try {
-    const pool = DEFAULT_POOL;
-    const statsUrl = `${API_BASE}/${pool}/`;
-    const minersUrl = `${API_BASE}/${pool}/miners?method=active`;
-    const blocksUrl = `${API_BASE}/${pool}/blocks`;
+  const pool = DEFAULT_POOL;
+  const statsUrl = `${API_BASE}/${pool}/`;
+  const minersUrl = `${API_BASE}/${pool}/miners?method=active`;
+  const blocksUrl = `${API_BASE}/${pool}/blocks`;
 
+  console.log('Fetching stats from:', statsUrl);
+  console.log('Fetching miners from:', minersUrl);
+  console.log('Fetching blocks from:', blocksUrl);
+
+  try {
     const [statsRes, minersRes, blocksRes] = await Promise.all([
       fetchWithCache(statsUrl),
       fetchWithCache(minersUrl),
       fetchWithCache(blocksUrl)
     ]);
 
-    displayStats(statsRes);
-    allMiners = flattenMiners(minersRes);
+    console.log('Stats response:', statsRes);
+    console.log('Miners response:', minersRes);
+    console.log('Blocks response:', blocksRes);
+
+    // Try both data structures
+    const statsData = statsRes.body || statsRes;
+    const minersData = minersRes.body || minersRes;
+    const blocksData = blocksRes.body || blocksRes;
+
+    displayStats(statsData);
+    allMiners = flattenMiners(minersData);
     displayMiners(allMiners);
-    displayBlocks(blocksRes);
+    displayBlocks(blocksData);
     hideLoading();
     announce(`Data updated for ${pool}`);
   } catch (err) {
-    console.error(err);
+    console.error('Error loading data:', err);
     showError(err.message);
   }
 }
@@ -300,14 +312,16 @@ async function fetchWithCache(url) {
   const cached = getCachedData(url, REFRESH_INTERVAL);
   if (cached) return cached;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status} – ${res.statusText}`);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} – ${res.statusText} (url: ${url})`);
+  }
   const data = await res.json();
   setCachedData(url, data);
   return data;
 }
 
 function displayStats(data) {
-  const primary = data.body?.primary || {};
+  const primary = data.primary || {};
   const blocks = primary.blocks || { valid: 0, invalid: 0 };
   const network = primary.network || { difficulty: 0, hashrate: 0, height: 0 };
   const hashrate = primary.hashrate || { shared: 0, solo: 0 };
@@ -324,7 +338,7 @@ function displayStats(data) {
 }
 
 function flattenMiners(data) {
-  const primary = data.body?.primary || {};
+  const primary = data.primary || {};
   const all = [];
   if (primary.shared) all.push(...primary.shared);
   if (primary.solo) all.push(...primary.solo);
@@ -332,6 +346,10 @@ function flattenMiners(data) {
 }
 
 function displayMiners(miners) {
+  if (!miners || miners.length === 0) {
+    elements.minersGrid.innerHTML = '<p class="no-data">No active miners</p>';
+    return;
+  }
   const sorted = [...miners].sort((a, b) => (b.hashrate || 0) - (a.hashrate || 0));
   const html = sorted.slice(0, 100).map(m => `
     <div class="card">
@@ -341,15 +359,19 @@ function displayMiners(miners) {
       <p>Work: ${(m.work || 0).toFixed(2)}</p>
     </div>
   `).join('');
-  elements.minersGrid.innerHTML = html || '<p class="no-data">No active miners</p>';
+  elements.minersGrid.innerHTML = html;
 }
 
 function displayBlocks(data) {
-  const primary = data.body?.primary || {};
+  const primary = data.primary || {};
   const allBlocks = [...(primary.pending || []), ...(primary.confirmed || [])]
     .sort((a, b) => (b.height || 0) - (a.height || 0))
     .slice(0, 20);
 
+  if (allBlocks.length === 0) {
+    elements.blocksList.innerHTML = '<p>No blocks found</p>';
+    return;
+  }
   const html = allBlocks.map(b => `
     <div class="block-item">
       <span class="height">#${b.height}</span>
@@ -359,7 +381,7 @@ function displayBlocks(data) {
       <span>${b.worker || 'unknown'}</span>
     </div>
   `).join('');
-  elements.blocksList.innerHTML = html || '<p>No blocks found</p>';
+  elements.blocksList.innerHTML = html;
 }
 
 function handleSearch(event) {
@@ -414,7 +436,7 @@ function debounce(fn, delay) {
   };
 }
 
-// Simple cache helpers
+// Cache helpers
 function getCachedData(key, ttl) {
   const item = localStorage.getItem(key);
   if (!item) return null;
@@ -461,6 +483,9 @@ READEOM
     log_info "Setup complete! Dashboard running in background."
     log_info "To view logs: tail -f $DASHBOARD_DIR/dashboard.log (if using nohup)"
     log_info "To stop: pkill -f 'node.*server.js' (if using nohup) or pm2 stop mining-dashboard"
+    echo ""
+    log_info "IMPORTANT: Open your browser's Developer Console (F12) to see debug logs."
+    log_info "Check that the pool service is running: sudo systemctl status foundation-server"
 }
 
 main
