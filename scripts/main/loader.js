@@ -24,19 +24,35 @@ class PoolLoader extends events.EventEmitter {
   }
 
   /**
-   * Build pool configurations from all .js and .json files in configs/pools/
-   * @param {string} poolsDir - Path to the pools directory.
+   * Build pool configurations from all .js and .json files in the pools directory.
+   * @param {string} poolsDir - Path to the pools directory (optional – defaults to ../configs/pools/).
    * @param {Object} baseConfig - Base configuration (from main config) to merge.
    * @returns {Array} Array of pool config objects.
    */
   buildPoolConfigs(poolsDir, baseConfig) {
     const log = this.logger;
 
+    // ---- FIX: set default if undefined or empty ----
+    if (!poolsDir || typeof poolsDir !== 'string') {
+      // Default: assume loader.js is in scripts/main/, so configs/pools/ is two levels up
+      const defaultPath = path.join(__dirname, '../../configs/pools');
+      const msg = `Pools directory not provided, using default: ${defaultPath}`;
+      if (log && typeof log.warn === 'function') {
+        log.warn('Loader', 'Warning', msg);
+      } else {
+        console.warn('[Loader/Warning]', msg);
+      }
+      poolsDir = defaultPath;
+    }
+
     // Ensure the directory exists
     if (!fs.existsSync(poolsDir)) {
       const msg = `Pools directory not found: ${poolsDir}`;
-      if (log && log.error) log.error('Loader', 'Error', msg);
-      else console.error('[Loader/Error]', msg);
+      if (log && typeof log.error === 'function') {
+        log.error('Loader', 'Error', msg);
+      } else {
+        console.error('[Loader/Error]', msg);
+      }
       return [];
     }
 
@@ -46,8 +62,11 @@ class PoolLoader extends events.EventEmitter {
 
     if (files.length === 0) {
       const msg = 'No pool configuration files found in ' + poolsDir;
-      if (log && log.warn) log.warn('Loader', 'Warning', msg);
-      else console.warn('[Loader/Warning]', msg);
+      if (log && typeof log.warn === 'function') {
+        log.warn('Loader', 'Warning', msg);
+      } else {
+        console.warn('[Loader/Warning]', msg);
+      }
       return [];
     }
 
@@ -63,7 +82,6 @@ class PoolLoader extends events.EventEmitter {
           // .js file – require it
           delete require.cache[require.resolve(fullPath)];
           poolConfig = require(fullPath);
-          // If it's a function, call it (allows dynamic config generation)
           if (typeof poolConfig === 'function') {
             poolConfig = poolConfig(baseConfig);
           }
@@ -77,14 +95,16 @@ class PoolLoader extends events.EventEmitter {
         // Validate essential fields
         if (!poolConfig.name || !poolConfig.primary || !poolConfig.primary.address) {
           const msg = `Pool config in ${file} is missing required fields (name, primary.address)`;
-          if (log && log.warn) log.warn('Loader', 'Warning', msg);
-          else console.warn('[Loader/Warning]', msg);
+          if (log && typeof log.warn === 'function') {
+            log.warn('Loader', 'Warning', msg);
+          } else {
+            console.warn('[Loader/Warning]', msg);
+          }
           continue;
         }
 
         this.poolConfigs.push(poolConfig);
 
-        // FIXED: correct template literal and fallback if logger.info missing
         const logMsg = `Loaded pool ${poolConfig.name} from ${file}`;
         if (log && typeof log.info === 'function') {
           log.info('Builder', 'Setup', logMsg);
@@ -94,8 +114,11 @@ class PoolLoader extends events.EventEmitter {
 
       } catch (err) {
         const msg = `Error loading pool config from ${file}: ${err.message}`;
-        if (log && log.error) log.error('Loader', 'Error', msg);
-        else console.error('[Loader/Error]', msg);
+        if (log && typeof log.error === 'function') {
+          log.error('Loader', 'Error', msg);
+        } else {
+          console.error('[Loader/Error]', msg);
+        }
         // Continue to next file
       }
     }
