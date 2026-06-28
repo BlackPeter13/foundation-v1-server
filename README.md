@@ -1,9 +1,6 @@
 # Foundation Server
-
-[![Codecov Coverage](https://img.shields.io/codecov/c/github/blinkhash/foundation-server.svg?style=flat-square)](https://codecov.io/gh/blinkhash/foundation-server/)
 [![Foundation CI](https://github.com/blinkhash/foundation-server/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/blinkhash/foundation-server/actions/workflows/build.yml)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
-[![Downloads](https://img.shields.io/npm/dm/foundation-server.svg)](https://www.npmjs.com/package/foundation-server)
 [![Version](https://img.shields.io/npm/v/foundation-server.svg)](https://www.npmjs.com/package/foundation-server)
 [![Known Vulnerabilities](https://snyk.io/test/npm/foundation-server/badge.svg)](https://snyk.io/test/npm/foundation-server)
 [![Discord](https://img.shields.io/discord/738590795384356904)](https://discord.gg/rNjez6VgNF)
