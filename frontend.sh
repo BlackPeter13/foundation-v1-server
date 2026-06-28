@@ -28,7 +28,6 @@ install_nodejs18() {
     wget -q "$NODE_URL"
     sudo tar -xJf "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz" -C "$NODE_INSTALL_DIR" --strip-components=1
     rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
-    # Verify
     if [ -x "$NODE_INSTALL_DIR/bin/node" ]; then
         log_info "Node.js installed: $($NODE_INSTALL_DIR/bin/node -v)"
     else
@@ -42,7 +41,8 @@ ask_env_vars() {
     echo "Please configure the dashboard:"
     read -p "API Base URL (e.g., http://localhost:3001/api/v1): " API_BASE_URL
     API_BASE_URL=${API_BASE_URL:-http://localhost:3001/api/v1}
-    read -p "Default pool (optional): " DEFAULT_POOL
+    read -p "Pool name (e.g., XRO, BTC, etc.): " DEFAULT_POOL
+    DEFAULT_POOL=${DEFAULT_POOL:-XRO}
     read -p "Refresh interval in ms (default: 30000): " REFRESH_INTERVAL
     REFRESH_INTERVAL=${REFRESH_INTERVAL:-30000}
     read -p "Dashboard port (default: 8080): " PORT
@@ -54,18 +54,12 @@ start_dashboard() {
     cd "$DASHBOARD_DIR"
     log_info "Starting dashboard with Node.js 18 from $NODE_INSTALL_DIR..."
 
-    # Use isolated node/npm
     NODE_BIN="$NODE_INSTALL_DIR/bin/node"
-    NPM_BIN="$NODE_INSTALL_DIR/bin/npm"
-
-    # Check if PM2 is available (system-wide)
     if command -v pm2 &> /dev/null; then
-        # Use PM2 with the isolated Node
         PM2_BIN=$(which pm2)
         sudo -E env "PATH=$NODE_INSTALL_DIR/bin:$PATH" $PM2_BIN start $NODE_BIN server.js --name mining-dashboard --interpreter $NODE_BIN
         log_info "Dashboard started with PM2 (use 'pm2 logs mining-dashboard' to see logs)"
     else
-        # Run directly with nohup using isolated Node
         nohup $NODE_BIN server.js > dashboard.log 2>&1 &
         log_info "Dashboard started in background (log: $DASHBOARD_DIR/dashboard.log)."
         log_info "To stop: pkill -f 'node.*server.js'"
@@ -85,18 +79,13 @@ show_url() {
 
 # ---------- Main ----------
 main() {
-    # 1. Install isolated Node.js 18
     install_nodejs18
-
-    # 2. Ask for .env configuration
     ask_env_vars
 
-    # 3. Create dashboard directory and files
     log_info "Creating dashboard at $DASHBOARD_DIR"
     mkdir -p "$DASHBOARD_DIR"/{public/{css,js/utils},tests}
     cd "$DASHBOARD_DIR"
 
-    # Write .env
     cat > .env << EOF
 API_BASE_URL=$API_BASE_URL
 DEFAULT_POOL=$DEFAULT_POOL
@@ -104,7 +93,6 @@ REFRESH_INTERVAL=$REFRESH_INTERVAL
 PORT=$PORT
 EOF
 
-    # Write package.json – FIXED: added "type": "module"
     cat > package.json << 'PKGEOF'
 {
   "name": "foundation-mining-dashboard",
@@ -136,7 +124,6 @@ EOF
 }
 PKGEOF
 
-    # Write server.js, CSS, JS, etc. (same as before)
     cat > server.js << 'SERVEOF'
 import express from 'express';
 import path from 'path';
@@ -150,7 +137,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = process.env.PORT || 8080;
 const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3001/api/v1';
-const defaultPool = process.env.DEFAULT_POOL || '';
+const defaultPool = process.env.DEFAULT_POOL || 'XRO';
 const refreshInterval = parseInt(process.env.REFRESH_INTERVAL) || 30000;
 app.use(compression());
 app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], connectSrc: ["'self'", apiBaseUrl.replace(/\/api\/v1.*$/, '')], styleSrc: ["'self'", "'unsafe-inline'"], scriptSrc: ["'self'", "'unsafe-inline'"] } } }));
@@ -173,10 +160,7 @@ app.get('/', (req, res) => {
   <div id="app">
     <header class="header">
       <h1>⚡ Foundation Mining Pool</h1>
-      <div class="pool-selector-wrapper">
-        <label for="pool-selector">Pool:</label>
-        <select id="pool-selector"></select>
-      </div>
+      <div class="pool-label">Pool: <span id="pool-name"></span></div>
     </header>
     <section class="stats-grid" id="stats"></section>
     <div class="search-container">
@@ -200,10 +184,6 @@ app.get('/', (req, res) => {
       <h2>Recent Blocks</h2>
       <div id="blocks-list" class="blocks-list"></div>
     </div>
-    <div id="payments-container">
-      <h2>Payment Records</h2>
-      <div id="payments-list" class="payments-list"></div>
-    </div>
     <div id="status" role="status" aria-live="polite" class="sr-only"></div>
   </div>
   <script src="/js/app.js"></script>
@@ -215,17 +195,15 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.listen(port, () => console.log(`Dashboard running at http://localhost:${port}`));
 SERVEOF
 
-    # CSS
     cat > public/css/style.css << 'CSSEOF'
 :root { --primary: #1a1a2e; --secondary: #16213e; --accent: #0f3460; --highlight: #e94560; --success: #2ecc71; --warning: #f1c40f; --danger: #e74c3c; --text: #eee; --card-bg: #1e2a4a; --border-radius: 8px; --shadow: 0 4px 12px rgba(0,0,0,0.3); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--primary); color: var(--text); padding: 1rem; line-height: 1.6; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
-.container { max-width: 1400px; margin: 0 auto; }
 .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 1rem 0; border-bottom: 2px solid var(--accent); margin-bottom: 2rem; }
 .header h1 { font-size: 1.8rem; color: var(--highlight); }
-.pool-selector-wrapper { display: flex; align-items: center; gap: 0.5rem; }
-.pool-selector-wrapper select { background: var(--card-bg); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem; cursor: pointer; }
+.pool-label { font-size: 1.2rem; color: #aaa; }
+.pool-label span { color: var(--highlight); font-weight: bold; }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 1rem; margin-bottom: 2rem; }
 .stat-card { background: var(--card-bg); padding: 1rem; border-radius: var(--border-radius); text-align: center; box-shadow: var(--shadow); }
 .stat-card span { display: block; font-size: 0.8rem; text-transform: uppercase; color: #aaa; letter-spacing: 0.5px; }
@@ -239,10 +217,10 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 .card h4 { color: var(--highlight); margin-bottom: 0.3rem; word-break: break-all; font-size: 0.9rem; }
 .card p { font-size: 0.9rem; margin: 0.15rem 0; color: #ccc; }
 .card .hashrate { color: var(--success); font-weight: bold; }
-#blocks-container, #payments-container { margin-top: 2rem; }
-#blocks-container h2, #payments-container h2 { border-bottom: 1px solid var(--accent); padding-bottom: 0.3rem; margin-bottom: 1rem; }
-.blocks-list, .payments-list { display: flex; flex-direction: column; gap: 0.5rem; }
-.block-item, .payment-item { background: var(--card-bg); padding: 0.8rem 1.2rem; border-radius: var(--border-radius); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+#blocks-container { margin-top: 2rem; }
+#blocks-container h2 { border-bottom: 1px solid var(--accent); padding-bottom: 0.3rem; margin-bottom: 1rem; }
+.blocks-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.block-item { background: var(--card-bg); padding: 0.8rem 1.2rem; border-radius: var(--border-radius); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; font-size: 0.9rem; }
 .block-item .height { color: var(--highlight); font-weight: bold; }
 .block-item .luck { color: var(--warning); }
 .loader { text-align: center; padding: 2rem; display: none; }
@@ -255,84 +233,229 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 @media (max-width: 768px) { .header { flex-direction: column; align-items: stretch; gap: 0.5rem; } .stats-grid { grid-template-columns: repeat(2,1fr); } .grid, .skeleton-grid { grid-template-columns: 1fr; } }
 CSSEOF
 
-    # JS
     cat > public/js/app.js << 'APPEOF'
-import { getCachedData, setCachedData } from './utils/cache.js';
+// FIXED – uses actual pool API endpoints
 const API_BASE = window.__env?.API_BASE_URL || 'http://localhost:3001/api/v1';
-const DEFAULT_POOL = window.__env?.DEFAULT_POOL || '';
+const DEFAULT_POOL = window.__env?.DEFAULT_POOL || 'XRO';
 const REFRESH_INTERVAL = window.__env?.REFRESH_INTERVAL || 30000;
-const elements = { stats: document.getElementById('stats'), minersGrid: document.getElementById('miners-grid'), blocksList: document.getElementById('blocks-list'), paymentsList: document.getElementById('payments-list'), loader: document.getElementById('loader'), error: document.getElementById('error'), search: document.getElementById('search'), poolSelector: document.getElementById('pool-selector'), skeleton: document.getElementById('skeleton'), status: document.getElementById('status') };
-let currentPool = DEFAULT_POOL;
+
+const elements = {
+  stats: document.getElementById('stats'),
+  minersGrid: document.getElementById('miners-grid'),
+  blocksList: document.getElementById('blocks-list'),
+  loader: document.getElementById('loader'),
+  error: document.getElementById('error'),
+  search: document.getElementById('search'),
+  skeleton: document.getElementById('skeleton'),
+  status: document.getElementById('status'),
+  poolName: document.getElementById('pool-name')
+};
+
 let allMiners = [];
 let refreshTimer = null;
-document.addEventListener('DOMContentLoaded', init);
-function init() { setupEventListeners(); loadPoolsAndData(); scheduleAutoRefresh(); }
-function setupEventListeners() { elements.search.addEventListener('input', debounce(handleSearch, 300)); elements.poolSelector.addEventListener('change', (e) => { currentPool = e.target.value; loadPoolData(); }); }
-async function loadPoolsAndData() { try { const pools = await fetchPools(); populatePoolSelector(pools); if (!currentPool && pools.length > 0) { currentPool = pools[0]; } if (currentPool) { await loadPoolData(); } else { announce('No pools available'); } } catch (err) { console.warn('Error loading pools:', err); if (currentPool) await loadPoolData(); else showError('Could not fetch pool list'); } }
-async function fetchPools() { const url = `${API_BASE}/pools`; const cached = getCachedData(url, 60000); if (cached) return cached; const res = await fetch(url); if (!res.ok) throw new Error(`HTTP ${res.status}`); const data = await res.json(); setCachedData(url, data); return data; }
-function populatePoolSelector(pools) { const select = elements.poolSelector; select.innerHTML = ''; if (pools.length === 0) { select.innerHTML = '<option value="">No pools</option>'; return; } pools.forEach(p => { const opt = document.createElement('option'); opt.value = p; opt.textContent = p; select.appendChild(opt); }); if (currentPool && pools.includes(currentPool)) { select.value = currentPool; } else { select.value = pools[0]; currentPool = pools[0]; } }
-async function loadPoolData() { if (!currentPool) return; showLoading(); try { const statsKey = `${API_BASE}/${currentPool}/statistics`; const minersKey = `${API_BASE}/${currentPool}/miners`; const blocksKey = `${API_BASE}/${currentPool}/blocks`; const paymentsKey = `${API_BASE}/${currentPool}/payments`; const [stats, miners, blocks, payments] = await Promise.all([ fetchWithCache(statsKey), fetchWithCache(minersKey), fetchWithCache(blocksKey), fetchWithCache(paymentsKey) ]); displayStats(stats); allMiners = flattenMiners(miners); displayMiners(allMiners); displayBlocks(blocks); displayPayments(payments); hideLoading(); announce(`Data updated for ${currentPool}`); } catch (err) { console.error(err); showError(err.message); } }
-async function fetchWithCache(url) { const cached = getCachedData(url, REFRESH_INTERVAL); if (cached) return cached; const res = await fetch(url); if (!res.ok) throw new Error(`HTTP ${res.status} – ${res.statusText}`); const data = await res.json(); setCachedData(url, data); return data; }
-function displayStats(stats) { const primary = stats.primary || {}; const blocks = primary.blocks || { valid: 0, invalid: 0 }; const network = primary.network || { difficulty: 0, hashrate: 0, height: 0 }; const hashrate = primary.hashrate || { shared: 0, solo: 0 }; const status = primary.status || { miners: 0, workers: 0 }; elements.stats.innerHTML = `<div class="stat-card"><span>Total Hashrate</span><strong>${(hashrate.shared + hashrate.solo).toFixed(2)} MH/s</strong></div><div class="stat-card"><span>Miners</span><strong>${status.miners}</strong></div><div class="stat-card"><span>Workers</span><strong>${status.workers}</strong></div><div class="stat-card"><span>Valid Blocks</span><strong>${blocks.valid}</strong></div><div class="stat-card"><span>Network Diff</span><strong>${network.difficulty.toFixed(2)}</strong></div><div class="stat-card"><span>Block Height</span><strong>${network.height}</strong></div>`; }
-function flattenMiners(minersData) { const all = []; if (minersData.primary) { if (minersData.primary.shared) all.push(...minersData.primary.shared); if (minersData.primary.solo) all.push(...minersData.primary.solo); } if (minersData.auxiliary) { if (minersData.auxiliary.shared) all.push(...minersData.auxiliary.shared); if (minersData.auxiliary.solo) all.push(...minersData.auxiliary.solo); } return all; }
-function displayMiners(miners) { const sorted = [...miners].sort((a, b) => (b.hashrate || 0) - (a.hashrate || 0)); const html = sorted.slice(0, 100).map(m => `<div class="card"><h4>${m.miner}</h4><p class="hashrate">⚡ ${(m.hashrate || 0).toFixed(2)} MH/s</p><p>Shares: V:${m.shares?.valid || 0} I:${m.shares?.invalid || 0} S:${m.shares?.stale || 0}</p><p>Work: ${(m.work || 0).toFixed(2)}</p></div>`).join(''); elements.minersGrid.innerHTML = html || '<p class="no-data">No miners active</p>'; }
-function displayBlocks(blocksData) { const primary = blocksData.primary || {}; const allBlocks = [...(primary.pending || []), ...(primary.confirmed || [])].sort((a, b) => (b.height || 0) - (a.height || 0)).slice(0, 20); const html = allBlocks.map(b => `<div class="block-item"><span class="height">#${b.height}</span><span>${b.hash?.slice(0, 12) || ''}…</span><span>💰 ${b.reward?.toFixed(4) || 'N/A'}</span><span class="luck">Luck: ${(b.luck || 0).toFixed(1)}%</span><span>${b.worker || 'unknown'}</span></div>`).join(''); elements.blocksList.innerHTML = html || '<p>No blocks found</p>'; }
-function displayPayments(paymentsData) { const records = paymentsData?.primary?.records || []; const sorted = records.sort((a, b) => (b.time || 0) - (a.time || 0)).slice(0, 10); const html = sorted.map(p => `<div class="payment-item"><span>${new Date(p.time).toLocaleString()}</span><span>💰 ${p.paid?.toFixed(4) || 'N/A'}</span><span>👤 ${p.miners || 0} miners</span><span>${p.transaction?.slice(0, 12) || ''}…</span></div>`).join(''); elements.paymentsList.innerHTML = html || '<p>No payments yet</p>'; }
-function handleSearch(event) { const term = event.target.value.toLowerCase().trim(); if (!term) { displayMiners(allMiners); return; } const filtered = allMiners.filter(m => m.miner.toLowerCase().includes(term)); displayMiners(filtered); announce(`Found ${filtered.length} miners`); }
-function scheduleAutoRefresh() { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = setInterval(() => { loadPoolData().catch(console.warn); }, REFRESH_INTERVAL); }
-function showLoading() { elements.loader.style.display = 'block'; elements.error.style.display = 'none'; elements.skeleton.style.display = 'grid'; elements.minersGrid.innerHTML = ''; }
-function hideLoading() { elements.loader.style.display = 'none'; elements.skeleton.style.display = 'none'; }
-function showError(message) { elements.error.style.display = 'block'; elements.error.querySelector('p').textContent = `⚠️ ${message}`; elements.loader.style.display = 'none'; elements.skeleton.style.display = 'none'; }
-function announce(msg) { elements.status.textContent = msg; clearTimeout(window._statusTimeout); window._statusTimeout = setTimeout(() => { elements.status.textContent = ''; }, 5000); }
-window.retryFetch = function() { loadPoolData(); };
-function debounce(fn, delay) { let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), delay); }; }
-APPEOF
 
-    cat > public/js/utils/cache.js << 'CACHEEOF'
-export function getCachedData(key, ttl) { const item = localStorage.getItem(key); if (!item) return null; try { const { timestamp, data } = JSON.parse(item); const age = Date.now() - timestamp; return age < ttl ? data : null; } catch { return null; } }
-export function setCachedData(key, data) { const item = { timestamp: Date.now(), data }; localStorage.setItem(key, JSON.stringify(item)); }
-CACHEEOF
+document.addEventListener('DOMContentLoaded', () => {
+  // Display pool name
+  if (elements.poolName) elements.poolName.textContent = DEFAULT_POOL;
+  init();
+});
+
+function init() {
+  setupEventListeners();
+  loadPoolData();
+  scheduleAutoRefresh();
+}
+
+function setupEventListeners() {
+  elements.search.addEventListener('input', debounce(handleSearch, 300));
+}
+
+async function loadPoolData() {
+  showLoading();
+  try {
+    const pool = DEFAULT_POOL;
+    const statsUrl = `${API_BASE}/${pool}/`;
+    const minersUrl = `${API_BASE}/${pool}/miners?method=active`;
+    const blocksUrl = `${API_BASE}/${pool}/blocks`;
+
+    const [statsRes, minersRes, blocksRes] = await Promise.all([
+      fetchWithCache(statsUrl),
+      fetchWithCache(minersUrl),
+      fetchWithCache(blocksUrl)
+    ]);
+
+    displayStats(statsRes);
+    allMiners = flattenMiners(minersRes);
+    displayMiners(allMiners);
+    displayBlocks(blocksRes);
+    hideLoading();
+    announce(`Data updated for ${pool}`);
+  } catch (err) {
+    console.error(err);
+    showError(err.message);
+  }
+}
+
+async function fetchWithCache(url) {
+  const cached = getCachedData(url, REFRESH_INTERVAL);
+  if (cached) return cached;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} – ${res.statusText}`);
+  const data = await res.json();
+  setCachedData(url, data);
+  return data;
+}
+
+function displayStats(data) {
+  const primary = data.body?.primary || {};
+  const blocks = primary.blocks || { valid: 0, invalid: 0 };
+  const network = primary.network || { difficulty: 0, hashrate: 0, height: 0 };
+  const hashrate = primary.hashrate || { shared: 0, solo: 0 };
+  const status = primary.status || { miners: 0, workers: 0 };
+
+  elements.stats.innerHTML = `
+    <div class="stat-card"><span>Total Hashrate</span><strong>${((hashrate.shared||0)+(hashrate.solo||0)).toFixed(2)} MH/s</strong></div>
+    <div class="stat-card"><span>Miners</span><strong>${status.miners || 0}</strong></div>
+    <div class="stat-card"><span>Workers</span><strong>${status.workers || 0}</strong></div>
+    <div class="stat-card"><span>Valid Blocks</span><strong>${blocks.valid || 0}</strong></div>
+    <div class="stat-card"><span>Network Diff</span><strong>${network.difficulty?.toFixed(2) || 'N/A'}</strong></div>
+    <div class="stat-card"><span>Block Height</span><strong>${network.height || 'N/A'}</strong></div>
+  `;
+}
+
+function flattenMiners(data) {
+  const primary = data.body?.primary || {};
+  const all = [];
+  if (primary.shared) all.push(...primary.shared);
+  if (primary.solo) all.push(...primary.solo);
+  return all;
+}
+
+function displayMiners(miners) {
+  const sorted = [...miners].sort((a, b) => (b.hashrate || 0) - (a.hashrate || 0));
+  const html = sorted.slice(0, 100).map(m => `
+    <div class="card">
+      <h4>${m.miner}</h4>
+      <p class="hashrate">⚡ ${(m.hashrate || 0).toFixed(2)} MH/s</p>
+      <p>Shares: V:${m.shares?.valid || 0} I:${m.shares?.invalid || 0} S:${m.shares?.stale || 0}</p>
+      <p>Work: ${(m.work || 0).toFixed(2)}</p>
+    </div>
+  `).join('');
+  elements.minersGrid.innerHTML = html || '<p class="no-data">No active miners</p>';
+}
+
+function displayBlocks(data) {
+  const primary = data.body?.primary || {};
+  const allBlocks = [...(primary.pending || []), ...(primary.confirmed || [])]
+    .sort((a, b) => (b.height || 0) - (a.height || 0))
+    .slice(0, 20);
+
+  const html = allBlocks.map(b => `
+    <div class="block-item">
+      <span class="height">#${b.height}</span>
+      <span>${b.hash?.slice(0, 12) || ''}…</span>
+      <span>💰 ${b.reward?.toFixed(4) || 'N/A'}</span>
+      <span class="luck">Luck: ${(b.luck || 0).toFixed(1)}%</span>
+      <span>${b.worker || 'unknown'}</span>
+    </div>
+  `).join('');
+  elements.blocksList.innerHTML = html || '<p>No blocks found</p>';
+}
+
+function handleSearch(event) {
+  const term = event.target.value.toLowerCase().trim();
+  if (!term) { displayMiners(allMiners); return; }
+  const filtered = allMiners.filter(m => m.miner.toLowerCase().includes(term));
+  displayMiners(filtered);
+  announce(`Found ${filtered.length} miners`);
+}
+
+function scheduleAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    loadPoolData().catch(console.warn);
+  }, REFRESH_INTERVAL);
+}
+
+function showLoading() {
+  elements.loader.style.display = 'block';
+  elements.error.style.display = 'none';
+  elements.skeleton.style.display = 'grid';
+  elements.minersGrid.innerHTML = '';
+}
+
+function hideLoading() {
+  elements.loader.style.display = 'none';
+  elements.skeleton.style.display = 'none';
+}
+
+function showError(message) {
+  elements.error.style.display = 'block';
+  elements.error.querySelector('p').textContent = `⚠️ ${message}`;
+  elements.loader.style.display = 'none';
+  elements.skeleton.style.display = 'none';
+}
+
+function announce(msg) {
+  elements.status.textContent = msg;
+  clearTimeout(window._statusTimeout);
+  window._statusTimeout = setTimeout(() => {
+    elements.status.textContent = '';
+  }, 5000);
+}
+
+window.retryFetch = function() { loadPoolData(); };
+
+function debounce(fn, delay) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
+}
+
+// Simple cache helpers
+function getCachedData(key, ttl) {
+  const item = localStorage.getItem(key);
+  if (!item) return null;
+  try {
+    const { timestamp, data } = JSON.parse(item);
+    return (Date.now() - timestamp) < ttl ? data : null;
+  } catch { return null; }
+}
+function setCachedData(key, data) {
+  localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), data }));
+}
+APPEOF
 
     cat > tests/app.test.js << 'TESTOEF'
 describe('Mining Dashboard', () => {
-  beforeEach(() => {
-    document.body.innerHTML = `<div id="stats"></div><div id="miners-grid"></div><div id="blocks-list"></div><div id="payments-list"></div><div id="loader"></div><div id="error"></div><div id="search"></div><div id="pool-selector"></div><div id="skeleton"></div><div id="status"></div>`;
-    window.__env = { API_BASE_URL: 'http://localhost:3001/api/v1', DEFAULT_POOL: 'BCA', REFRESH_INTERVAL: 30000 };
-    global.fetch = jest.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([{ id: 1, name: 'Test Miner' }]) }));
-  });
-  test('displays pools selector after fetch', async () => { expect(true).toBe(true); });
+  test('basic sanity', () => { expect(true).toBe(true); });
 });
 TESTOEF
 
     cat > README.md << 'READEOM'
 # Foundation Mining Dashboard
 
-A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, payments, auto-refresh, multi-pool support, caching.
+A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, auto-refresh, caching.
 
 ## Setup
 1. `npm install`
-2. Copy `.env.example` to `.env` and set `API_BASE_URL`.
+2. Copy `.env.example` to `.env` and set `API_BASE_URL` and `DEFAULT_POOL`.
 3. `npm start`
 
 ## Environment
 - `API_BASE_URL`: your backend API (e.g., http://server:3001/api/v1)
-- `DEFAULT_POOL`: optional
+- `DEFAULT_POOL`: pool name (e.g., XRO)
 - `REFRESH_INTERVAL`: ms (default 30000)
 - `PORT`: server port (default 8080)
-
-## Deploy
-`pm2 start server.js --name mining-dashboard`
 READEOM
 
-    # Install dependencies using isolated Node.js
     log_info "Installing npm dependencies (using isolated Node.js 18)..."
     $NODE_INSTALL_DIR/bin/node $NODE_INSTALL_DIR/bin/npm install
 
-    # Start the dashboard using isolated Node.js
     log_info "Starting the dashboard..."
     start_dashboard
-
-    # Show URL
     show_url
     echo ""
     log_info "Setup complete! Dashboard running in background."
