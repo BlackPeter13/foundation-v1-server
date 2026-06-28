@@ -3,6 +3,9 @@
  * Loader (Updated)
  *
  * Loads pool configurations from the configs/pools/ directory.
+ * Skips:
+ *   - Files with "example" in the name (templates)
+ *   - Pools with `enabled: false` or `disabled: true`
  * Emits log events via the provided logger.
  */
 
@@ -27,14 +30,13 @@ class PoolLoader extends events.EventEmitter {
    * Build pool configurations from all .js and .json files in the pools directory.
    * @param {string} poolsDir - Path to the pools directory (optional – defaults to ../configs/pools/).
    * @param {Object} baseConfig - Base configuration (from main config) to merge.
-   * @returns {Array} Array of pool config objects.
+   * @returns {Array} Array of pool config objects (only enabled, non‑example ones).
    */
   buildPoolConfigs(poolsDir, baseConfig) {
     const log = this.logger;
 
-    // ---- FIX: set default if undefined or empty ----
+    // ---- Set default if undefined or empty ----
     if (!poolsDir || typeof poolsDir !== 'string') {
-      // Default: assume loader.js is in scripts/main/, so configs/pools/ is two levels up
       const defaultPath = path.join(__dirname, '../../configs/pools');
       const msg = `Pools directory not provided, using default: ${defaultPath}`;
       if (log && typeof log.warn === 'function') {
@@ -70,11 +72,28 @@ class PoolLoader extends events.EventEmitter {
       return [];
     }
 
+    let loadedCount = 0;
+    let skippedCount = 0;
+
     for (const file of files) {
       const fullPath = path.join(poolsDir, file);
-      try {
-        let poolConfig;
+      const baseName = path.basename(file, path.extname(file));
 
+      // ---- 1. Skip example/template files ----
+      if (baseName.toLowerCase().includes('example')) {
+        const msg = `Skipping example/template file: ${file}`;
+        if (log && typeof log.info === 'function') {
+          log.info('Loader', 'Skipped', msg);
+        } else {
+          console.log('[Loader/Skipped]', msg);
+        }
+        skippedCount++;
+        continue;
+      }
+
+      // ---- 2. Try to load the config ----
+      let poolConfig;
+      try {
         if (file.endsWith('.json')) {
           const content = fs.readFileSync(fullPath, 'utf8');
           poolConfig = JSON.parse(content);
@@ -86,32 +105,6 @@ class PoolLoader extends events.EventEmitter {
             poolConfig = poolConfig(baseConfig);
           }
         }
-
-        // Merge with baseConfig (if provided)
-        if (baseConfig && typeof baseConfig === 'object') {
-          poolConfig = Object.assign({}, baseConfig, poolConfig);
-        }
-
-        // Validate essential fields
-        if (!poolConfig.name || !poolConfig.primary || !poolConfig.primary.address) {
-          const msg = `Pool config in ${file} is missing required fields (name, primary.address)`;
-          if (log && typeof log.warn === 'function') {
-            log.warn('Loader', 'Warning', msg);
-          } else {
-            console.warn('[Loader/Warning]', msg);
-          }
-          continue;
-        }
-
-        this.poolConfigs.push(poolConfig);
-
-        const logMsg = `Loaded pool ${poolConfig.name} from ${file}`;
-        if (log && typeof log.info === 'function') {
-          log.info('Builder', 'Setup', logMsg);
-        } else {
-          console.log('[Builder/Setup]', logMsg);
-        }
-
       } catch (err) {
         const msg = `Error loading pool config from ${file}: ${err.message}`;
         if (log && typeof log.error === 'function') {
@@ -119,8 +112,59 @@ class PoolLoader extends events.EventEmitter {
         } else {
           console.error('[Loader/Error]', msg);
         }
-        // Continue to next file
+        continue;
       }
+
+      // Merge with baseConfig (if provided)
+      if (baseConfig && typeof baseConfig === 'object') {
+        poolConfig = Object.assign({}, baseConfig, poolConfig);
+      }
+
+      // ---- 3. Check if the pool is explicitly disabled ----
+      const isEnabled = poolConfig.enabled !== undefined ? poolConfig.enabled : true;
+      const isDisabled = poolConfig.disabled === true;
+
+      if (!isEnabled || isDisabled) {
+        const name = poolConfig.name || file;
+        const msg = `Skipping disabled pool: ${name}`;
+        if (log && typeof log.info === 'function') {
+          log.info('Loader', 'Skipped', msg);
+        } else {
+          console.log('[Loader/Skipped]', msg);
+        }
+        skippedCount++;
+        continue;
+      }
+
+      // ---- 4. Validate essential fields ----
+      if (!poolConfig.name || !poolConfig.primary || !poolConfig.primary.address) {
+        const msg = `Pool config in ${file} is missing required fields (name, primary.address)`;
+        if (log && typeof log.warn === 'function') {
+          log.warn('Loader', 'Warning', msg);
+        } else {
+          console.warn('[Loader/Warning]', msg);
+        }
+        continue;
+      }
+
+      // ---- 5. Pool is valid – add it ----
+      this.poolConfigs.push(poolConfig);
+      loadedCount++;
+
+      const logMsg = `Loaded pool ${poolConfig.name} from ${file}`;
+      if (log && typeof log.info === 'function') {
+        log.info('Builder', 'Setup', logMsg);
+      } else {
+        console.log('[Builder/Setup]', logMsg);
+      }
+    }
+
+    // ---- Summary ----
+    const summary = `Loaded ${loadedCount} pool(s), skipped ${skippedCount} disabled/example pool(s).`;
+    if (log && typeof log.info === 'function') {
+      log.info('Loader', 'Summary', summary);
+    } else {
+      console.log('[Loader/Summary]', summary);
     }
 
     return this.poolConfigs;
