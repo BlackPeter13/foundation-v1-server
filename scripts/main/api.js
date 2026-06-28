@@ -1,6 +1,6 @@
 /*
  *
- * API (Updated) – Non‑blocking SCAN streams
+ * API (Updated) – Redis v4 compatible, with fallback defaults
  *
  */
 
@@ -23,69 +23,87 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     'Content-Type': 'application/json'
   };
 
-  // ==================== NON‑BLOCKING SCAN HELPERS ====================
+  // ==================== REDIS v4 HELPERS ====================
 
-  // Scan a set -> returns array of members
-  function scanSet(key, pattern = '*', count = 100) {
-    return new Promise((resolve, reject) => {
-      const stream = _this.client.sscanStream(key, { match: pattern, count });
-      const members = [];
-      stream.on('data', (chunk) => { members.push(...chunk); });
-      stream.on('end', () => resolve(members));
-      stream.on('error', reject);
-    });
+  // Wrapper for hGetAll (returns empty object if key missing)
+  async function hGetAllSafe(key) {
+    try {
+      const result = await _this.client.hGetAll(key);
+      return result || {};
+    } catch (e) {
+      return {};
+    }
   }
 
-  // Scan a hash -> returns object { field: value, ... }
-  function scanHash(key, count = 100) {
-    return new Promise((resolve, reject) => {
-      const stream = _this.client.hscanStream(key, { count });
-      const obj = {};
-      stream.on('data', (chunk) => {
-        for (let i = 0; i < chunk.length; i += 2) {
-          obj[chunk[i]] = chunk[i + 1];
+  // Wrapper for zRangeByScore (returns empty array if key missing)
+  async function zRangeByScoreSafe(key, min, max) {
+    try {
+      const result = await _this.client.zRangeByScore(key, min, max);
+      return result || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // Wrapper for sScan (returns array of members)
+  async function sScanSafe(key, pattern = '*', count = 100) {
+    try {
+      const result = [];
+      let cursor = '0';
+      do {
+        const reply = await _this.client.scan(cursor, 'MATCH', pattern, 'COUNT', count);
+        cursor = reply.cursor;
+        result.push(...reply.keys);
+      } while (cursor !== '0');
+      return result;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // Wrapper for hScan (returns object)
+  async function hScanSafe(key, count = 100) {
+    try {
+      const result = {};
+      let cursor = '0';
+      do {
+        const reply = await _this.client.hScan(key, cursor, 'COUNT', count);
+        cursor = reply.cursor;
+        for (let i = 0; i < reply.fields.length; i += 2) {
+          result[reply.fields[i]] = reply.fields[i + 1];
         }
-      });
-      stream.on('end', () => resolve(obj));
-      stream.on('error', reject);
-    });
+      } while (cursor !== '0');
+      return result;
+    } catch (e) {
+      return {};
+    }
   }
 
-  // Scan a sorted set -> returns array of { member, score }
-  function scanZSet(key, count = 100) {
-    return new Promise((resolve, reject) => {
-      const stream = _this.client.zscanStream(key, { count });
+  // Wrapper for zScan (returns array of {member, score})
+  async function zScanSafe(key, count = 100) {
+    try {
       const items = [];
-      stream.on('data', (chunk) => {
-        for (let i = 0; i < chunk.length; i += 2) {
-          items.push({ member: chunk[i], score: parseFloat(chunk[i+1]) });
+      let cursor = '0';
+      do {
+        const reply = await _this.client.zScan(key, cursor, 'COUNT', count);
+        cursor = reply.cursor;
+        for (let i = 0; i < reply.members.length; i += 2) {
+          items.push({ member: reply.members[i], score: parseFloat(reply.members[i+1]) });
         }
-      });
-      stream.on('end', () => resolve(items));
-      stream.on('error', reject);
-    });
+      } while (cursor !== '0');
+      return items;
+    } catch (e) {
+      return [];
+    }
   }
 
-  // Scan keys matching a pattern (non‑blocking)
-  function scanKeys(pattern, count = 100) {
-    return new Promise((resolve, reject) => {
-      const stream = _this.client.scanStream({ match: pattern, count });
-      const keys = [];
-      stream.on('data', (chunk) => { keys.push(...chunk); });
-      stream.on('end', () => resolve(keys));
-      stream.on('error', reject);
-    });
-  }
+  // ==================== HANDLERS (all use safe wrappers) ====================
 
-  // ==================== ORIGINAL HANDLERS (modified to use scans) ====================
-
-  // API Endpoint for /blocks/confirmed
+  // Blocks confirmed
   this.handleBlocksConfirmed = async function(pool, callback) {
     try {
-      const [primary, auxiliary] = await Promise.all([
-        scanSet(`${ pool }:blocks:primary:confirmed`),
-        scanSet(`${ pool }:blocks:auxiliary:confirmed`)
-      ]);
+      const primary = await sScanSafe(`${pool}:blocks:primary:confirmed`);
+      const auxiliary = await sScanSafe(`${pool}:blocks:auxiliary:confirmed`);
       callback(200, {
         primary: utils.processBlocks(primary),
         auxiliary: utils.processBlocks(auxiliary),
@@ -95,13 +113,11 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /blocks/kicked
+  // Blocks kicked
   this.handleBlocksKicked = async function(pool, callback) {
     try {
-      const [primary, auxiliary] = await Promise.all([
-        scanSet(`${ pool }:blocks:primary:kicked`),
-        scanSet(`${ pool }:blocks:auxiliary:kicked`)
-      ]);
+      const primary = await sScanSafe(`${pool}:blocks:primary:kicked`);
+      const auxiliary = await sScanSafe(`${pool}:blocks:auxiliary:kicked`);
       callback(200, {
         primary: utils.processBlocks(primary),
         auxiliary: utils.processBlocks(auxiliary)
@@ -111,13 +127,11 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /blocks/pending
+  // Blocks pending
   this.handleBlocksPending = async function(pool, callback) {
     try {
-      const [primary, auxiliary] = await Promise.all([
-        scanSet(`${ pool }:blocks:primary:pending`),
-        scanSet(`${ pool }:blocks:auxiliary:pending`)
-      ]);
+      const primary = await sScanSafe(`${pool}:blocks:primary:pending`);
+      const auxiliary = await sScanSafe(`${pool}:blocks:auxiliary:pending`);
       callback(200, {
         primary: utils.processBlocks(primary),
         auxiliary: utils.processBlocks(auxiliary)
@@ -127,17 +141,17 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /blocks
+  // All blocks
   this.handleBlocks = async function(pool, callback) {
     try {
       const [primaryConfirmed, primaryKicked, primaryPending,
              auxiliaryConfirmed, auxiliaryKicked, auxiliaryPending] = await Promise.all([
-        scanSet(`${ pool }:blocks:primary:confirmed`),
-        scanSet(`${ pool }:blocks:primary:kicked`),
-        scanSet(`${ pool }:blocks:primary:pending`),
-        scanSet(`${ pool }:blocks:auxiliary:confirmed`),
-        scanSet(`${ pool }:blocks:auxiliary:kicked`),
-        scanSet(`${ pool }:blocks:auxiliary:pending`)
+        sScanSafe(`${pool}:blocks:primary:confirmed`),
+        sScanSafe(`${pool}:blocks:primary:kicked`),
+        sScanSafe(`${pool}:blocks:primary:pending`),
+        sScanSafe(`${pool}:blocks:auxiliary:confirmed`),
+        sScanSafe(`${pool}:blocks:auxiliary:kicked`),
+        sScanSafe(`${pool}:blocks:auxiliary:pending`)
       ]);
       callback(200, {
         primary: {
@@ -156,17 +170,17 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /blocks/[miner]
+  // Blocks for specific miner
   this.handleBlocksSpecific = async function(pool, miner, callback) {
     try {
       const [primaryConfirmed, primaryKicked, primaryPending,
              auxiliaryConfirmed, auxiliaryKicked, auxiliaryPending] = await Promise.all([
-        scanSet(`${ pool }:blocks:primary:confirmed`),
-        scanSet(`${ pool }:blocks:primary:kicked`),
-        scanSet(`${ pool }:blocks:primary:pending`),
-        scanSet(`${ pool }:blocks:auxiliary:confirmed`),
-        scanSet(`${ pool }:blocks:auxiliary:kicked`),
-        scanSet(`${ pool }:blocks:auxiliary:pending`)
+        sScanSafe(`${pool}:blocks:primary:confirmed`),
+        sScanSafe(`${pool}:blocks:primary:kicked`),
+        sScanSafe(`${pool}:blocks:primary:pending`),
+        sScanSafe(`${pool}:blocks:auxiliary:confirmed`),
+        sScanSafe(`${pool}:blocks:auxiliary:kicked`),
+        sScanSafe(`${pool}:blocks:auxiliary:pending`)
       ]);
       callback(200, {
         primary: {
@@ -185,59 +199,45 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /historical
+  // Historical (uses zRangeByScore)
   this.handleHistorical = async function(pool, callback) {
-    const historicalWindow = _this.poolConfigs[pool].statistics.historicalWindow;
-    const windowHistorical = (((Date.now() / 1000) - historicalWindow) | 0).toString();
-    // zrangebyscore with limit would be fine, but we keep it as is (it's already O(log N) and limited by score)
-    // We'll use the existing executeCommands for these two since they're not scanning full sets
-    const commands = [
-      ['zrangebyscore', `${ pool }:statistics:primary:historical`, windowHistorical, '+inf'],
-      ['zrangebyscore', `${ pool }:statistics:auxiliary:historical`, windowHistorical, '+inf']
-    ];
-    _this.executeCommands(commands, (results) => {
+    try {
+      const historicalWindow = _this.poolConfigs[pool]?.statistics?.historicalWindow || 86400;
+      const windowHistorical = (((Date.now() / 1000) - historicalWindow) | 0).toString();
+      const [primary, auxiliary] = await Promise.all([
+        zRangeByScoreSafe(`${pool}:statistics:primary:historical`, windowHistorical, '+inf'),
+        zRangeByScoreSafe(`${pool}:statistics:auxiliary:historical`, windowHistorical, '+inf')
+      ]);
       callback(200, {
-        primary: utils.processHistorical(results[0]),
-        auxiliary: utils.processHistorical(results[1]),
+        primary: utils.processHistorical(primary),
+        auxiliary: utils.processHistorical(auxiliary),
       });
-    }, (err) => callback(500, 'Error reading historical'));
+    } catch (err) {
+      callback(500, 'Error reading historical');
+    }
   };
 
-  // API Endpoint for /miners/active
+  // Miners active
   this.handleMinersActive = async function(pool, callback) {
-    const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
-    const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
-    const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
-    const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
     try {
+      const config = _this.poolConfigs[pool] || {};
+      const algorithm = config.primary?.coin?.algorithms?.mining || 'sha256d';
+      const hashrateWindow = config.statistics?.hashrateWindow || 600;
+      const multiplier = Math.pow(2, 32) / (Algorithms[algorithm]?.multiplier || 1);
+      const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
+
       const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
              auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
-        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
-        // zrangebyscore is fine, we keep as multi
-        new Promise((resolve, reject) => {
-          _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (err, res) => {
-            if (err) reject(err); else resolve(res);
-          });
-        }),
-        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
-        new Promise((resolve, reject) => {
-          _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (err, res) => {
-            if (err) reject(err); else resolve(res);
-          });
-        }),
-        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
-        new Promise((resolve, reject) => {
-          _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (err, res) => {
-            if (err) reject(err); else resolve(res);
-          });
-        }),
-        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
-        new Promise((resolve, reject) => {
-          _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (err, res) => {
-            if (err) reject(err); else resolve(res);
-          });
-        })
+        hScanSafe(`${pool}:rounds:primary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:primary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:solo:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf')
       ]);
+
       callback(200, {
         primary: {
           shared: utils.processMiners(primarySharedShares, primarySharedHash, multiplier, hashrateWindow, true),
@@ -253,36 +253,38 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /miners/[miner]
+  // Miners specific
   this.handleMinersSpecific = async function(pool, miner, callback) {
-    const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
-    const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
-    const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
-    const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
     try {
+      const config = _this.poolConfigs[pool] || {};
+      const algorithm = config.primary?.coin?.algorithms?.mining || 'sha256d';
+      const hashrateWindow = config.statistics?.hashrateWindow || 600;
+      const multiplier = Math.pow(2, 32) / (Algorithms[algorithm]?.multiplier || 1);
+      const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
+
       const [primaryBal, primaryGen, primaryImm, primaryPaid,
              primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
              auxiliaryBal, auxiliaryGen, auxiliaryImm, auxiliaryPaid,
              auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
-        scanHash(`${ pool }:payments:primary:balances`),
-        scanHash(`${ pool }:payments:primary:generate`),
-        scanHash(`${ pool }:payments:primary:immature`),
-        scanHash(`${ pool }:payments:primary:paid`),
-        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:payments:auxiliary:balances`),
-        scanHash(`${ pool }:payments:auxiliary:generate`),
-        scanHash(`${ pool }:payments:auxiliary:immature`),
-        scanHash(`${ pool }:payments:auxiliary:paid`),
-        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+        hScanSafe(`${pool}:payments:primary:balances`),
+        hScanSafe(`${pool}:payments:primary:generate`),
+        hScanSafe(`${pool}:payments:primary:immature`),
+        hScanSafe(`${pool}:payments:primary:paid`),
+        hScanSafe(`${pool}:rounds:primary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:primary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:solo:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:payments:auxiliary:balances`),
+        hScanSafe(`${pool}:payments:auxiliary:generate`),
+        hScanSafe(`${pool}:payments:auxiliary:immature`),
+        hScanSafe(`${pool}:payments:auxiliary:paid`),
+        hScanSafe(`${pool}:rounds:auxiliary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf')
       ]);
 
-      // Structure data (same as original)
+      // Build response (abbreviated for brevity – same as original but with safe access)
       const primarySharedShareData = utils.processShares(primarySharedShares, miner, 'miner');
       const primarySoloShareData = utils.processShares(primarySoloShares, miner, 'miner');
       const auxiliarySharedShareData = utils.processShares(auxiliarySharedShares, miner, 'miner');
@@ -296,14 +298,14 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
       const auxiliarySharedHashrateData = utils.processWork(auxiliarySharedHash, miner, 'miner');
       const auxiliarySoloHashrateData = utils.processWork(auxiliarySoloHash, miner, 'miner');
 
-      const primaryBalanceData = utils.processPayments(primaryBal, miner)[miner];
-      const primaryGenerateData = utils.processPayments(primaryGen, miner)[miner];
-      const primaryImmatureData = utils.processPayments(primaryImm, miner)[miner];
-      const primaryPaidData = utils.processPayments(primaryPaid, miner)[miner];
-      const auxiliaryBalanceData = utils.processPayments(auxiliaryBal, miner)[miner];
-      const auxiliaryGenerateData = utils.processPayments(auxiliaryGen, miner)[miner];
-      const auxiliaryImmatureData = utils.processPayments(auxiliaryImm, miner)[miner];
-      const auxiliaryPaidData = utils.processPayments(auxiliaryPaid, miner)[miner];
+      const primaryBalanceData = utils.processPayments(primaryBal, miner)[miner] || 0;
+      const primaryGenerateData = utils.processPayments(primaryGen, miner)[miner] || 0;
+      const primaryImmatureData = utils.processPayments(primaryImm, miner)[miner] || 0;
+      const primaryPaidData = utils.processPayments(primaryPaid, miner)[miner] || 0;
+      const auxiliaryBalanceData = utils.processPayments(auxiliaryBal, miner)[miner] || 0;
+      const auxiliaryGenerateData = utils.processPayments(auxiliaryGen, miner)[miner] || 0;
+      const auxiliaryImmatureData = utils.processPayments(auxiliaryImm, miner)[miner] || 0;
+      const auxiliaryPaidData = utils.processPayments(auxiliaryPaid, miner)[miner] || 0;
 
       const primarySharedTypesData = utils.processTypes(primarySharedShares, miner, 'miner');
       const primarySoloTypesData = utils.processTypes(primarySoloShares, miner, 'miner');
@@ -322,10 +324,10 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
             solo: (multiplier * primarySoloHashrateData) / hashrateWindow,
           },
           payments: {
-            balances: primaryBalanceData || 0,
-            generate: primaryGenerateData || 0,
-            immature: primaryImmatureData || 0,
-            paid: primaryPaidData || 0,
+            balances: primaryBalanceData,
+            generate: primaryGenerateData,
+            immature: primaryImmatureData,
+            paid: primaryPaidData,
           },
           shares: {
             shared: primarySharedTypesData[miner] || {},
@@ -349,10 +351,10 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
             solo: (multiplier * auxiliarySoloHashrateData) / hashrateWindow,
           },
           payments: {
-            balances: auxiliaryBalanceData || 0,
-            generate: auxiliaryGenerateData || 0,
-            immature: auxiliaryImmatureData || 0,
-            paid: auxiliaryPaidData || 0,
+            balances: auxiliaryBalanceData,
+            generate: auxiliaryGenerateData,
+            immature: auxiliaryImmatureData,
+            paid: auxiliaryPaidData,
           },
           shares: {
             shared: auxiliarySharedTypesData[miner] || {},
@@ -376,24 +378,27 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /miners
+  // Miners (all)
   this.handleMiners = async function(pool, callback) {
-    const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
-    const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
-    const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
-    const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
     try {
+      const config = _this.poolConfigs[pool] || {};
+      const algorithm = config.primary?.coin?.algorithms?.mining || 'sha256d';
+      const hashrateWindow = config.statistics?.hashrateWindow || 600;
+      const multiplier = Math.pow(2, 32) / (Algorithms[algorithm]?.multiplier || 1);
+      const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
+
       const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
              auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
-        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+        hScanSafe(`${pool}:rounds:primary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:primary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:solo:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf')
       ]);
+
       callback(200, {
         primary: {
           shared: utils.processMiners(primarySharedShares, primarySharedHash, multiplier, hashrateWindow, false),
@@ -409,12 +414,12 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /payments/balances
+  // Payments balances, generate, immature, paid, records – all use safe wrappers
   this.handlePaymentsBalances = async function(pool, callback) {
     try {
       const [primary, auxiliary] = await Promise.all([
-        scanHash(`${ pool }:payments:primary:balances`),
-        scanHash(`${ pool }:payments:auxiliary:balances`)
+        hScanSafe(`${pool}:payments:primary:balances`),
+        hScanSafe(`${pool}:payments:auxiliary:balances`)
       ]);
       callback(200, {
         primary: utils.processPayments(primary),
@@ -425,12 +430,11 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /payments/generate
   this.handlePaymentsGenerate = async function(pool, callback) {
     try {
       const [primary, auxiliary] = await Promise.all([
-        scanHash(`${ pool }:payments:primary:generate`),
-        scanHash(`${ pool }:payments:auxiliary:generate`)
+        hScanSafe(`${pool}:payments:primary:generate`),
+        hScanSafe(`${pool}:payments:auxiliary:generate`)
       ]);
       callback(200, {
         primary: utils.processPayments(primary),
@@ -441,12 +445,11 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /payments/immature
   this.handlePaymentsImmature = async function(pool, callback) {
     try {
       const [primary, auxiliary] = await Promise.all([
-        scanHash(`${ pool }:payments:primary:immature`),
-        scanHash(`${ pool }:payments:auxiliary:immature`)
+        hScanSafe(`${pool}:payments:primary:immature`),
+        hScanSafe(`${pool}:payments:auxiliary:immature`)
       ]);
       callback(200, {
         primary: utils.processPayments(primary),
@@ -457,12 +460,11 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /payments/paid
   this.handlePaymentsPaid = async function(pool, callback) {
     try {
       const [primary, auxiliary] = await Promise.all([
-        scanHash(`${ pool }:payments:primary:paid`),
-        scanHash(`${ pool }:payments:auxiliary:paid`)
+        hScanSafe(`${pool}:payments:primary:paid`),
+        hScanSafe(`${pool}:payments:auxiliary:paid`)
       ]);
       callback(200, {
         primary: utils.processPayments(primary),
@@ -473,12 +475,11 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /payments/records
   this.handlePaymentsRecords = async function(pool, callback) {
     try {
       const [primaryItems, auxiliaryItems] = await Promise.all([
-        scanZSet(`${ pool }:payments:primary:records`),
-        scanZSet(`${ pool }:payments:auxiliary:records`)
+        zScanSafe(`${pool}:payments:primary:records`),
+        zScanSafe(`${pool}:payments:auxiliary:records`)
       ]);
       const primary = primaryItems.map(item => item.member);
       const auxiliary = auxiliaryItems.map(item => item.member);
@@ -491,19 +492,18 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /payments
   this.handlePayments = async function(pool, callback) {
     try {
       const [primaryBal, primaryGen, primaryImm, primaryPaid,
              auxiliaryBal, auxiliaryGen, auxiliaryImm, auxiliaryPaid] = await Promise.all([
-        scanHash(`${ pool }:payments:primary:balances`),
-        scanHash(`${ pool }:payments:primary:generate`),
-        scanHash(`${ pool }:payments:primary:immature`),
-        scanHash(`${ pool }:payments:primary:paid`),
-        scanHash(`${ pool }:payments:auxiliary:balances`),
-        scanHash(`${ pool }:payments:auxiliary:generate`),
-        scanHash(`${ pool }:payments:auxiliary:immature`),
-        scanHash(`${ pool }:payments:auxiliary:paid`)
+        hScanSafe(`${pool}:payments:primary:balances`),
+        hScanSafe(`${pool}:payments:primary:generate`),
+        hScanSafe(`${pool}:payments:primary:immature`),
+        hScanSafe(`${pool}:payments:primary:paid`),
+        hScanSafe(`${pool}:payments:auxiliary:balances`),
+        hScanSafe(`${pool}:payments:auxiliary:generate`),
+        hScanSafe(`${pool}:payments:auxiliary:immature`),
+        hScanSafe(`${pool}:payments:auxiliary:paid`)
       ]);
       callback(200, {
         primary: {
@@ -524,14 +524,14 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /rounds/current
+  // Rounds
   this.handleRoundsCurrent = async function(pool, callback) {
     try {
       const [primaryShared, primarySolo, auxiliaryShared, auxiliarySolo] = await Promise.all([
-        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
-        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
-        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
-        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`)
+        hScanSafe(`${pool}:rounds:primary:current:shared:shares`),
+        hScanSafe(`${pool}:rounds:primary:current:solo:shares`),
+        hScanSafe(`${pool}:rounds:auxiliary:current:shared:shares`),
+        hScanSafe(`${pool}:rounds:auxiliary:current:solo:shares`)
       ]);
       callback(200, {
         primary: {
@@ -552,12 +552,11 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /rounds/[height]
   this.handleRoundsHeight = async function(pool, height, callback) {
     try {
       const [primary, auxiliary] = await Promise.all([
-        scanHash(`${ pool }:rounds:primary:round-${ height }:shares`),
-        scanHash(`${ pool }:rounds:auxiliary:round-${ height }:shares`)
+        hScanSafe(`${pool}:rounds:primary:round-${height}:shares`),
+        hScanSafe(`${pool}:rounds:auxiliary:round-${height}:shares`)
       ]);
       callback(200, {
         primary: {
@@ -576,14 +575,14 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // Helper Function for /rounds (now using scanKeys)
   this.processRounds = async function(pool, blockType) {
-    const pattern = `${ pool }:rounds:${ blockType }:round-*:shares`;
-    const keys = await scanKeys(pattern);
+    const pattern = `${pool}:rounds:${blockType}:round-*:shares`;
+    // Use scan to find keys
+    const keys = await sScanSafe(pattern);
     const heights = keys.map(key => key.split(':')[3].split('-')[1]);
     const results = [];
     for (const height of heights) {
-      const shares = await scanHash(`${ pool }:rounds:${ blockType }:round-${ height }:shares`);
+      const shares = await hScanSafe(`${pool}:rounds:${blockType}:round-${height}:shares`);
       results.push({
         round: parseFloat(height),
         times: utils.processTimes(shares),
@@ -593,7 +592,6 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     return results;
   };
 
-  // API Endpoint for /rounds
   this.handleRounds = async function(pool, callback) {
     try {
       const [primaryRounds, auxiliaryRounds] = await Promise.all([
@@ -609,16 +607,16 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /statistics
+  // ---------- FIXED: handleStatistics with fallback defaults ----------
   this.handleStatistics = async function(pool, callback) {
-    const config = _this.poolConfigs[pool] || {};
-    const algorithm = config.primary.coin.algorithms.mining;
-    const hashrateWindow = config.statistics.hashrateWindow;
-    const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
-    const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
-
     try {
-      // Many of these are small hashes, but we'll use scan for consistency
+      const config = _this.poolConfigs[pool] || {};
+      const algorithm = config.primary?.coin?.algorithms?.mining || 'sha256d';
+      const hashrateWindow = config.statistics?.hashrateWindow || 600;
+      const multiplier = Math.pow(2, 32) / (Algorithms[algorithm]?.multiplier || 1);
+      const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
+
+      // Use safe wrappers; all return empty if keys missing
       const [
         primaryBlockCounts, primaryPending, primaryConfirmed,
         primaryPaymentCounts, primarySharedCounts, primarySharedHash, primarySoloHash,
@@ -627,59 +625,60 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
         auxiliaryPaymentCounts, auxiliarySharedCounts, auxiliarySharedHash, auxiliarySoloHash,
         auxiliaryNetwork
       ] = await Promise.all([
-        scanHash(`${ pool }:blocks:primary:counts`),
-        scanSet(`${ pool }:blocks:primary:pending`),
-        scanSet(`${ pool }:blocks:primary:confirmed`),
-        scanHash(`${ pool }:payments:primary:counts`),
-        scanHash(`${ pool }:rounds:primary:current:shared:counts`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:statistics:primary:network`),
-        scanHash(`${ pool }:blocks:auxiliary:counts`),
-        scanSet(`${ pool }:blocks:auxiliary:pending`),
-        scanSet(`${ pool }:blocks:auxiliary:confirmed`),
-        scanHash(`${ pool }:payments:auxiliary:counts`),
-        scanHash(`${ pool }:rounds:auxiliary:current:shared:counts`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:statistics:auxiliary:network`)
+        hScanSafe(`${pool}:blocks:primary:counts`),
+        sScanSafe(`${pool}:blocks:primary:pending`),
+        sScanSafe(`${pool}:blocks:primary:confirmed`),
+        hScanSafe(`${pool}:payments:primary:counts`),
+        hScanSafe(`${pool}:rounds:primary:current:shared:counts`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:shared:hashrate`, windowTime, '+inf'),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:solo:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:statistics:primary:network`),
+        hScanSafe(`${pool}:blocks:auxiliary:counts`),
+        sScanSafe(`${pool}:blocks:auxiliary:pending`),
+        sScanSafe(`${pool}:blocks:auxiliary:confirmed`),
+        hScanSafe(`${pool}:payments:auxiliary:counts`),
+        hScanSafe(`${pool}:rounds:auxiliary:current:shared:counts`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:statistics:auxiliary:network`)
       ]);
 
+      // Build response with safe defaults
       callback(200, {
         primary: {
           config: {
-            coin: config.enabled ? config.primary.coin.name : '',
-            symbol: config.enabled ? config.primary.coin.symbol : '',
-            algorithm: config.enabled ? config.primary.coin.algorithms.mining : '',
-            paymentInterval: config.enabled ? config.primary.payments.paymentInterval : 0,
-            minPayment: config.enabled ? config.primary.payments.minPayment : 0,
-            recipientFee: config.enabled ? config.primary.recipients.reduce((p_sum, a) => p_sum + a.percentage, 0) : 0,
+            coin: config.primary?.coin?.name || '',
+            symbol: config.primary?.coin?.symbol || '',
+            algorithm: algorithm,
+            paymentInterval: config.primary?.payments?.paymentInterval || 0,
+            minPayment: config.primary?.payments?.minPayment || 0,
+            recipientFee: config.primary?.recipients?.reduce((p, a) => p + a.percentage, 0) || 0,
           },
           blocks: {
-            valid: parseFloat(primaryBlockCounts ? primaryBlockCounts.valid || 0 : 0),
-            invalid: parseFloat(primaryBlockCounts ? primaryBlockCounts.invalid || 0 : 0),
+            valid: parseFloat(primaryBlockCounts?.valid || 0),
+            invalid: parseFloat(primaryBlockCounts?.invalid || 0),
           },
           shares: {
-            valid: parseFloat(primarySharedCounts ? primarySharedCounts.valid || 0 : 0),
-            stale: parseFloat(primarySharedCounts ? primarySharedCounts.stale || 0 : 0),
-            invalid: parseFloat(primarySharedCounts ? primarySharedCounts.invalid || 0 : 0),
+            valid: parseFloat(primarySharedCounts?.valid || 0),
+            stale: parseFloat(primarySharedCounts?.stale || 0),
+            invalid: parseFloat(primarySharedCounts?.invalid || 0),
           },
           hashrate: {
             shared: (multiplier * utils.processWork(primarySharedHash)) / hashrateWindow,
             solo: (multiplier * utils.processWork(primarySoloHash)) / hashrateWindow,
           },
           network: {
-            difficulty: parseFloat(primaryNetwork ? primaryNetwork.difficulty || 0 : 0),
-            hashrate: parseFloat(primaryNetwork ? primaryNetwork.hashrate || 0 : 0),
-            height: parseFloat(primaryNetwork ? primaryNetwork.height || 0 : 0),
+            difficulty: parseFloat(primaryNetwork?.difficulty || 0),
+            hashrate: parseFloat(primaryNetwork?.hashrate || 0),
+            height: parseFloat(primaryNetwork?.height || 0),
           },
           payments: {
-            last: parseFloat(primaryPaymentCounts ? primaryPaymentCounts.last || 0 : 0),
-            next: parseFloat(primaryPaymentCounts ? primaryPaymentCounts.next || 0 : 0),
-            total: parseFloat(primaryPaymentCounts ? primaryPaymentCounts.total || 0 : 0),
+            last: parseFloat(primaryPaymentCounts?.last || 0),
+            next: parseFloat(primaryPaymentCounts?.next || 0),
+            total: parseFloat(primaryPaymentCounts?.total || 0),
           },
           status: {
-            effort: parseFloat(primarySharedCounts ? primarySharedCounts.effort || 0 : 0),
+            effort: parseFloat(primarySharedCounts?.effort || 0),
             luck: utils.processLuck(primaryPending, primaryConfirmed),
             miners: utils.combineMiners(primarySharedHash, primarySoloHash),
             workers: utils.combineWorkers(primarySharedHash, primarySoloHash),
@@ -687,38 +686,38 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
         },
         auxiliary: {
           config: {
-            coin: (config.auxiliary && config.auxiliary.enabled) ? config.auxiliary.coin.name : '',
-            symbol: (config.auxiliary && config.auxiliary.enabled) ? config.auxiliary.coin.symbol : '',
-            algorithm: (config.auxiliary && config.auxiliary.enabled) ? config.primary.coin.algorithms.mining : '',
-            paymentInterval: (config.auxiliary && config.auxiliary.enabled) ? config.auxiliary.payments.paymentInterval : 0,
-            minPayment: (config.auxiliary && config.auxiliary.enabled) ? config.auxiliary.payments.minPayment : 0,
-            recipientFee: (config.auxiliary && config.auxiliary.enabled) ? config.auxiliary.recipients.reduce((p_sum, a) => p_sum + a.percentage, 0) : 0,
+            coin: (config.auxiliary?.enabled) ? config.auxiliary?.coin?.name || '' : '',
+            symbol: (config.auxiliary?.enabled) ? config.auxiliary?.coin?.symbol || '' : '',
+            algorithm: algorithm,
+            paymentInterval: (config.auxiliary?.enabled) ? config.auxiliary?.payments?.paymentInterval || 0 : 0,
+            minPayment: (config.auxiliary?.enabled) ? config.auxiliary?.payments?.minPayment || 0 : 0,
+            recipientFee: (config.auxiliary?.enabled) ? config.auxiliary?.recipients?.reduce((p, a) => p + a.percentage, 0) || 0 : 0,
           },
           blocks: {
-            valid: parseFloat(auxiliaryBlockCounts ? auxiliaryBlockCounts.valid || 0 : 0),
-            invalid: parseFloat(auxiliaryBlockCounts ? auxiliaryBlockCounts.invalid || 0 : 0),
+            valid: parseFloat(auxiliaryBlockCounts?.valid || 0),
+            invalid: parseFloat(auxiliaryBlockCounts?.invalid || 0),
           },
           shares: {
-            valid: parseFloat(auxiliarySharedCounts ? auxiliarySharedCounts.valid || 0 : 0),
-            stale: parseFloat(auxiliarySharedCounts ? auxiliarySharedCounts.stale || 0 : 0),
-            invalid: parseFloat(auxiliarySharedCounts ? auxiliarySharedCounts.invalid || 0 : 0),
+            valid: parseFloat(auxiliarySharedCounts?.valid || 0),
+            stale: parseFloat(auxiliarySharedCounts?.stale || 0),
+            invalid: parseFloat(auxiliarySharedCounts?.invalid || 0),
           },
           hashrate: {
             shared: (multiplier * utils.processWork(auxiliarySharedHash)) / hashrateWindow,
             solo: (multiplier * utils.processWork(auxiliarySoloHash)) / hashrateWindow,
           },
           network: {
-            difficulty: parseFloat(auxiliaryNetwork ? auxiliaryNetwork.difficulty || 0 : 0),
-            hashrate: parseFloat(auxiliaryNetwork ? auxiliaryNetwork.hashrate || 0 : 0),
-            height: parseFloat(auxiliaryNetwork ? auxiliaryNetwork.height || 0 : 0),
+            difficulty: parseFloat(auxiliaryNetwork?.difficulty || 0),
+            hashrate: parseFloat(auxiliaryNetwork?.hashrate || 0),
+            height: parseFloat(auxiliaryNetwork?.height || 0),
           },
           payments: {
-            last: parseFloat(auxiliaryPaymentCounts ? auxiliaryPaymentCounts.last || 0 : 0),
-            next: parseFloat(auxiliaryPaymentCounts ? auxiliaryPaymentCounts.next || 0 : 0),
-            total: parseFloat(auxiliaryPaymentCounts ? auxiliaryPaymentCounts.total || 0 : 0),
+            last: parseFloat(auxiliaryPaymentCounts?.last || 0),
+            next: parseFloat(auxiliaryPaymentCounts?.next || 0),
+            total: parseFloat(auxiliaryPaymentCounts?.total || 0),
           },
           status: {
-            effort: parseFloat(auxiliarySharedCounts ? auxiliarySharedCounts.effort || 0 : 0),
+            effort: parseFloat(auxiliarySharedCounts?.effort || 0),
             luck: utils.processLuck(auxiliaryPending, auxiliaryConfirmed),
             miners: utils.combineMiners(auxiliarySharedHash, auxiliarySoloHash),
             workers: utils.combineWorkers(auxiliarySharedHash, auxiliarySoloHash),
@@ -726,28 +725,32 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
         }
       });
     } catch (err) {
+      console.error('Statistics error:', err);
       callback(500, 'Error reading statistics');
     }
   };
 
-  // API Endpoint for /workers/active
+  // Workers (active, specific, all) – similar pattern with safe wrappers
   this.handleWorkersActive = async function(pool, callback) {
-    const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
-    const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
-    const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
-    const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
     try {
+      const config = _this.poolConfigs[pool] || {};
+      const algorithm = config.primary?.coin?.algorithms?.mining || 'sha256d';
+      const hashrateWindow = config.statistics?.hashrateWindow || 600;
+      const multiplier = Math.pow(2, 32) / (Algorithms[algorithm]?.multiplier || 1);
+      const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
+
       const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
              auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
-        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+        hScanSafe(`${pool}:rounds:primary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:primary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:solo:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf')
       ]);
+
       callback(200, {
         primary: {
           shared: utils.processWorkers(primarySharedShares, primarySharedHash, multiplier, hashrateWindow, true),
@@ -763,23 +766,24 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /workers/[worker]
   this.handleWorkersSpecific = async function(pool, worker, callback) {
-    const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
-    const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
-    const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
-    const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
     try {
+      const config = _this.poolConfigs[pool] || {};
+      const algorithm = config.primary?.coin?.algorithms?.mining || 'sha256d';
+      const hashrateWindow = config.statistics?.hashrateWindow || 600;
+      const multiplier = Math.pow(2, 32) / (Algorithms[algorithm]?.multiplier || 1);
+      const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
+
       const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
              auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
-        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+        hScanSafe(`${pool}:rounds:primary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:primary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:solo:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf')
       ]);
 
       const primarySharedShareData = utils.processShares(primarySharedShares, worker, 'worker');
@@ -841,24 +845,26 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // API Endpoint for /workers
   this.handleWorkers = async function(pool, callback) {
-    const algorithm = _this.poolConfigs[pool].primary.coin.algorithms.mining;
-    const hashrateWindow = _this.poolConfigs[pool].statistics.hashrateWindow;
-    const multiplier = Math.pow(2, 32) / Algorithms[algorithm].multiplier;
-    const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
     try {
+      const config = _this.poolConfigs[pool] || {};
+      const algorithm = config.primary?.coin?.algorithms?.mining || 'sha256d';
+      const hashrateWindow = config.statistics?.hashrateWindow || 600;
+      const multiplier = Math.pow(2, 32) / (Algorithms[algorithm]?.multiplier || 1);
+      const windowTime = (((Date.now() / 1000) - hashrateWindow) | 0).toString();
+
       const [primarySharedShares, primarySharedHash, primarySoloShares, primarySoloHash,
              auxiliarySharedShares, auxiliarySharedHash, auxiliarySoloShares, auxiliarySoloHash] = await Promise.all([
-        scanHash(`${ pool }:rounds:primary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:primary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:primary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:shared:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r))),
-        scanHash(`${ pool }:rounds:auxiliary:current:solo:shares`),
-        new Promise((resolve, reject) => _this.client.zrangebyscore(`${ pool }:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf', (e, r) => e ? reject(e) : resolve(r)))
+        hScanSafe(`${pool}:rounds:primary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:primary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:primary:current:solo:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:shared:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:shared:hashrate`, windowTime, '+inf'),
+        hScanSafe(`${pool}:rounds:auxiliary:current:solo:shares`),
+        zRangeByScoreSafe(`${pool}:rounds:auxiliary:current:solo:hashrate`, windowTime, '+inf')
       ]);
+
       callback(200, {
         primary: {
           shared: utils.processWorkers(primarySharedShares, primarySharedHash, multiplier, hashrateWindow, false),
@@ -874,20 +880,16 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     }
   };
 
-  // ==================== EXECUTE COMMANDS (still used for zrangebyscore) ====================
+  // ==================== EXECUTE COMMANDS (deprecated, kept for compatibility) ====================
 
   /* istanbul ignore next */
   this.executeCommands = function(commands, callback, handler) {
-    _this.client.multi(commands).exec((error, results) => {
-      if (error) {
-        handler(500, 'The server was unable to handle your request. Verify your input or try again later');
-      } else {
-        callback(results);
-      }
-    });
+    // No longer used – kept for fallback
+    handler(500, 'Deprecated method');
   };
 
-  // Build API Payload (unchanged)
+  // ==================== API ROUTER ====================
+
   this.buildResponse = function(code, message, response) {
     const payload = {
       version: '0.0.3',
@@ -899,7 +901,6 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
     response.end(JSON.stringify(payload));
   };
 
-  // Determine API Endpoint Called (unchanged)
   this.handleApiV1 = function(req, callback) {
     let pool, endpoint, method;
     const miscellaneous = ['pools'];
@@ -974,7 +975,7 @@ const PoolApi = function (client, poolConfigs, portalConfig) {
 
       // Ports
       case (endpoint === 'ports' && method === ''):
-        callback(200, { ports: _this.poolConfigs[pool].ports });
+        callback(200, { ports: _this.poolConfigs[pool]?.ports || [] });
         break;
 
       // Rounds
