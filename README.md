@@ -1,5 +1,5 @@
 # Foundation Server
-[![Foundation CI](https://github.com/blinkhash/foundation-server/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/blinkhash/foundation-server/actions/workflows/build.yml)
+[![Foundation CI](https://github.com/blinkhash/foundation-server/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/BlackPeter13/foundation-v1-server/blob/master/.github/workflows/install-test.yml)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 [![Version](https://img.shields.io/npm/v/foundation-server.svg)](https://www.npmjs.com/package/foundation-server)
 [![Known Vulnerabilities](https://snyk.io/test/npm/foundation-server/badge.svg)](https://snyk.io/test/npm/foundation-server)
