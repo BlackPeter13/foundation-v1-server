@@ -1,26 +1,29 @@
 /*
  *
- * Main (Updated)
+ * Main (Updated with API server)
  *
  * Entry point for the Foundation pool server.
- * Loads configurations, initializes the pool, and starts the stratum server.
+ * Loads configurations, initializes Redis, starts the HTTP API,
+ * and launches the stratum server(s).
  */
 
 const path = require('path');
 const fs = require('fs');
+const express = require('express');
+const cors = require('cors');
+const redis = require('redis');
 const PoolLoader = require('./main/loader');
 const Pool = require('foundation-stratum');
+const PoolApi = require('./main/api');
 
 // -----------------------------------------------------------------------------
-// Logger – minimal fallback if no logger module exists
+// Logger – minimal fallback
 // -----------------------------------------------------------------------------
 
-// Try to load a custom logger; if not available, use console.
 let logger;
 try {
   logger = require('./logger');
   if (typeof logger.info !== 'function') {
-    // If the logger doesn't have .info, treat it as a plain object and wrap it
     const original = logger;
     logger = {
       info: (...args) => console.log('[INFO]', ...args),
@@ -31,7 +34,6 @@ try {
     };
   }
 } catch (e) {
-  // No logger module – use console with prefixes
   logger = {
     info: (...args) => console.log('[INFO]', ...args),
     warn: (...args) => console.warn('[WARN]', ...args),
@@ -40,12 +42,10 @@ try {
   };
 }
 
-// Helper to safely call logger methods (in case they are still missing)
 function safeLog(method, ...args) {
   if (logger && typeof logger[method] === 'function') {
     return logger[method](...args);
   }
-  // Fallback to console
   const prefix = method.toUpperCase();
   console.log(`[${prefix}]`, ...args);
 }
@@ -78,20 +78,89 @@ const main = async function() {
     process.exit(1);
   }
 
-  // Fixed: use backticks for template literal
-  safeLog('info', 'Main', 'Init', `Loaded ${Object.keys(poolConfigs).length} pool(s).`);
+  safeLog('info', 'Main', 'Init', `Loaded ${poolConfigs.length} pool(s).`);
 
-  // 3. Initialize each pool
+  // 3. Initialize Redis
+  const redisOptions = {
+    host: mainConfig.redis?.host || '127.0.0.1',
+    port: mainConfig.redis?.port || 6379,
+    password: mainConfig.redis?.password || undefined,
+    retry_strategy: function(options) {
+      if (options.error && options.error.code === 'ECONNREFUSED') {
+        safeLog('error', 'Redis', 'Connection refused – retrying in 5s');
+        return 5000;
+      }
+      if (options.total_retry_time > 60000) {
+        safeLog('error', 'Redis', 'Retry time exhausted');
+        return new Error('Redis retry time exhausted');
+      }
+      if (options.attempt > 10) {
+        safeLog('error', 'Redis', 'Max retry attempts reached');
+        return new Error('Redis max retry attempts reached');
+      }
+      return Math.min(options.attempt * 100, 3000);
+    },
+    socket_keepalive: true,
+    socket_keepalive_initial_delay: 30000,
+  };
+
+  const redisClient = redis.createClient(redisOptions);
+  redisClient.on('error', (err) => safeLog('error', 'Redis', err.message));
+  redisClient.on('connect', () => safeLog('info', 'Redis', 'Connected'));
+  await redisClient.connect();
+
+  // 4. Create Express app
+  const app = express();
+  const PORT = mainConfig.portal?.port || 3001;
+
+  // Enable CORS for all routes (so frontend can access from different port)
+  app.use(cors());
+
+  // JSON body parser (if needed)
+  app.use(express.json());
+
+  // 5. Mount the API
+  const poolApi = new PoolApi(redisClient, poolConfigs, mainConfig.portal || {});
+
+  app.use('/api/v1', (req, res) => {
+    const pathParts = req.path.split('/').filter(Boolean);
+    const pool = pathParts[0] || '';
+    const endpoint = pathParts[1] || '';
+    const method = req.query.method || '';
+
+    req.params = { pool, endpoint };
+    req.query = { method };
+
+    poolApi.handleApiV1(req, (statusCode, body) => {
+      res.status(statusCode).json(body);
+    });
+  });
+
+  // Optional: serve static frontend if you place it in 'public/'
+  const publicDir = path.join(__dirname, '../public');
+  if (fs.existsSync(publicDir)) {
+    app.use(express.static(publicDir));
+    safeLog('info', 'Web', `Serving static files from ${publicDir}`);
+  }
+
+  // Health check
+  app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: Date.now() });
+  });
+
+  // Start Express server
+  app.listen(PORT, () => {
+    safeLog('info', 'Web', `API server listening on http://localhost:${PORT}/api/v1`);
+  });
+
+  // 6. Start the stratum pools
   for (const poolConfig of poolConfigs) {
     try {
-      // Create a stratum server for this pool
-      // The authorizeFn and responseFn are callbacks – adjust as needed.
       const authorizeFn = function(ip, port, addrPrimary, addrAuxiliary, password, callback) {
-        // Basic authorization – you can replace with your own logic
+        // Basic authorization – replace with your own logic
         callback({ error: null, authorized: true });
       };
       const responseFn = function(data) {
-        // Handle responses (e.g., send to portal)
         safeLog('debug', 'Pool', 'Response', data);
       };
 
