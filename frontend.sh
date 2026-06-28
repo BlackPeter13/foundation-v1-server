@@ -1,20 +1,109 @@
-mkdir -p foundation-mining-dashboard/{public/{css,js/utils},tests} && \
-cd foundation-mining-dashboard && \
-cat > .env.example << 'EOF'
-API_BASE_URL=http://localhost:3001/api/v1
-DEFAULT_POOL=
-REFRESH_INTERVAL=30000
-PORT=8080
+#!/bin/bash
+# frontend-setup.sh – creates and runs the Foundation Mining Dashboard
+# Run with: ./frontend-setup.sh
+
+set -euo pipefail
+
+# ---------- Configuration ----------
+DASHBOARD_DIR="$HOME/Desktop/foundation-mining-dashboard"
+NODE_VERSION="18.20.8"
+NODE_DISTRO="linux-x64"
+NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
+
+# Color helpers
+log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
+log_warn()  { echo -e "\033[1;33m[WARN]\033[0m $1"; }
+log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; exit 1; }
+
+# ---------- Ensure Node.js 18+ ----------
+install_nodejs() {
+    log_info "Installing Node.js ${NODE_VERSION} from official binary..."
+    cd /tmp
+    wget -q "$NODE_URL"
+    sudo tar -xJf "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz" -C /usr/local --strip-components=1
+    rm "node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
+    export PATH="/usr/local/bin:$PATH"
+    log_info "Node.js installed: $(node -v)"
+}
+
+check_node() {
+    if ! command -v node &> /dev/null; then
+        log_warn "Node.js not found. Installing Node.js ${NODE_VERSION}..."
+        install_nodejs
+        return
+    fi
+    NODE_MAJOR=$(node -v | cut -d. -f1 | sed 's/v//')
+    if [ "$NODE_MAJOR" -lt 18 ]; then
+        log_warn "Node.js version $NODE_MAJOR detected (requires >=18). Upgrading to ${NODE_VERSION}..."
+        install_nodejs
+    else
+        log_info "Node.js version: $(node -v) – OK"
+    fi
+}
+
+# ---------- Interactive .env configuration ----------
+ask_env_vars() {
+    echo ""
+    echo "Please configure the dashboard:"
+    read -p "API Base URL (e.g., http://localhost:3001/api/v1): " API_BASE_URL
+    API_BASE_URL=${API_BASE_URL:-http://localhost:3001/api/v1}
+    read -p "Default pool (optional): " DEFAULT_POOL
+    read -p "Refresh interval in ms (default: 30000): " REFRESH_INTERVAL
+    REFRESH_INTERVAL=${REFRESH_INTERVAL:-30000}
+    read -p "Dashboard port (default: 8080): " PORT
+    PORT=${PORT:-8080}
+}
+
+# ---------- Start dashboard ----------
+start_dashboard() {
+    cd "$DASHBOARD_DIR"
+    log_info "Starting dashboard..."
+
+    if command -v pm2 &> /dev/null; then
+        pm2 start server.js --name mining-dashboard
+        log_info "Dashboard started with PM2 (use 'pm2 logs mining-dashboard' to see logs)"
+    else
+        log_warn "PM2 not found. Starting with npm (will run in foreground)."
+        log_info "Press Ctrl+C to stop, or run in background with 'npm start &'"
+        npm start
+    fi
+}
+
+# ---------- Show IP and port ----------
+show_url() {
+    # Get primary IP (first non-loopback IPv4)
+    IP=$(ip route get 1 2>/dev/null | awk '{print $NF; exit}' || hostname -I | awk '{print $1}')
+    if [ -z "$IP" ]; then
+        IP="localhost"
+    fi
+    echo ""
+    log_info "Dashboard is accessible at: http://$IP:$PORT"
+    log_info "If you are on the same machine, also: http://localhost:$PORT"
+}
+
+# ---------- Main ----------
+main() {
+    # 1. Check Node.js
+    check_node
+
+    # 2. Ask for .env configuration
+    ask_env_vars
+
+    # 3. Create dashboard directory and files
+    log_info "Creating dashboard at $DASHBOARD_DIR"
+    mkdir -p "$DASHBOARD_DIR"/{public/{css,js/utils},tests}
+    cd "$DASHBOARD_DIR"
+
+    # Write .env
+    cat > .env << EOF
+API_BASE_URL=$API_BASE_URL
+DEFAULT_POOL=$DEFAULT_POOL
+REFRESH_INTERVAL=$REFRESH_INTERVAL
+PORT=$PORT
 EOF
-cat > .gitignore << 'EOF'
-node_modules/
-.env
-.DS_Store
-*.log
-coverage/
-public/js/app.min.js
-EOF
-cat > package.json << 'EOF'
+
+    # Write other files (package.json, server.js, etc.)
+    cat > package.json << 'PKGEOF'
 {
   "name": "foundation-mining-dashboard",
   "version": "1.0.0",
@@ -42,8 +131,9 @@ cat > package.json << 'EOF'
     "node": ">=18"
   }
 }
-EOF
-cat > server.js << 'EOF'
+PKGEOF
+
+    cat > server.js << 'SERVEOF'
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -119,8 +209,10 @@ app.get('/', (req, res) => {
 });
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.listen(port, () => console.log(`Dashboard running at http://localhost:${port}`));
-EOF
-cat > public/css/style.css << 'EOF'
+SERVEOF
+
+    # Create CSS, JS, cache, etc. (abbreviated – include all from previous version)
+    cat > public/css/style.css << 'CSSEOF'
 :root { --primary: #1a1a2e; --secondary: #16213e; --accent: #0f3460; --highlight: #e94560; --success: #2ecc71; --warning: #f1c40f; --danger: #e74c3c; --text: #eee; --card-bg: #1e2a4a; --border-radius: 8px; --shadow: 0 4px 12px rgba(0,0,0,0.3); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--primary); color: var(--text); padding: 1rem; line-height: 1.6; }
@@ -157,8 +249,9 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 @keyframes shimmer { 100% { transform: translateX(100%); } }
 .skeleton-card::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.1) 50%, transparent 100%); animation: shimmer 1.6s infinite; }
 @media (max-width: 768px) { .header { flex-direction: column; align-items: stretch; gap: 0.5rem; } .stats-grid { grid-template-columns: repeat(2,1fr); } .grid, .skeleton-grid { grid-template-columns: 1fr; } }
-EOF
-cat > public/js/app.js << 'EOF'
+CSSEOF
+
+    cat > public/js/app.js << 'APPEOF'
 import { getCachedData, setCachedData } from './utils/cache.js';
 const API_BASE = window.__env?.API_BASE_URL || 'http://localhost:3001/api/v1';
 const DEFAULT_POOL = window.__env?.DEFAULT_POOL || '';
@@ -188,12 +281,14 @@ function showError(message) { elements.error.style.display = 'block'; elements.e
 function announce(msg) { elements.status.textContent = msg; clearTimeout(window._statusTimeout); window._statusTimeout = setTimeout(() => { elements.status.textContent = ''; }, 5000); }
 window.retryFetch = function() { loadPoolData(); };
 function debounce(fn, delay) { let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), delay); }; }
-EOF
-cat > public/js/utils/cache.js << 'EOF'
+APPEOF
+
+    cat > public/js/utils/cache.js << 'CACHEEOF'
 export function getCachedData(key, ttl) { const item = localStorage.getItem(key); if (!item) return null; try { const { timestamp, data } = JSON.parse(item); const age = Date.now() - timestamp; return age < ttl ? data : null; } catch { return null; } }
 export function setCachedData(key, data) { const item = { timestamp: Date.now(), data }; localStorage.setItem(key, JSON.stringify(item)); }
-EOF
-cat > tests/app.test.js << 'EOF'
+CACHEEOF
+
+    cat > tests/app.test.js << 'TESTOEF'
 describe('Mining Dashboard', () => {
   beforeEach(() => {
     document.body.innerHTML = `<div id="stats"></div><div id="miners-grid"></div><div id="blocks-list"></div><div id="payments-list"></div><div id="loader"></div><div id="error"></div><div id="search"></div><div id="pool-selector"></div><div id="skeleton"></div><div id="status"></div>`;
@@ -202,8 +297,9 @@ describe('Mining Dashboard', () => {
   });
   test('displays pools selector after fetch', async () => { expect(true).toBe(true); });
 });
-EOF
-cat > README.md << 'EOF'
+TESTOEF
+
+    cat > README.md << 'READEOM'
 # Foundation Mining Dashboard
 
 A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, payments, auto-refresh, multi-pool support, caching.
@@ -221,6 +317,36 @@ A real-time dashboard for foundation-v1-server. Features: live stats, miners lis
 
 ## Deploy
 `pm2 start server.js --name mining-dashboard`
+READEOM
 
-EOF
-echo "All files created in ./foundation-mining-dashboard"
+    # Install dependencies
+    log_info "Installing npm dependencies..."
+    npm install
+
+    # Start the dashboard
+    log_info "Starting the dashboard..."
+    if command -v pm2 &> /dev/null; then
+        pm2 start server.js --name mining-dashboard
+        log_info "Dashboard started with PM2 (use 'pm2 logs mining-dashboard' to see logs)"
+    else
+        # Attempt to run in background with nohup
+        nohup npm start > dashboard.log 2>&1 &
+        log_info "Dashboard started in background (log: $DASHBOARD_DIR/dashboard.log)."
+        log_info "To stop: pkill -f 'node server.js'"
+    fi
+
+    # Show URL
+    IP=$(ip route get 1 2>/dev/null | awk '{print $NF; exit}' || hostname -I | awk '{print $1}')
+    if [ -z "$IP" ]; then
+        IP="localhost"
+    fi
+    echo ""
+    log_info "Dashboard is accessible at: http://$IP:$PORT"
+    log_info "If you are on the same machine, also: http://localhost:$PORT"
+    echo ""
+    log_info "Setup complete! Dashboard running in background."
+    log_info "To view logs: tail -f $DASHBOARD_DIR/dashboard.log (if using nohup)"
+    log_info "To stop: pkill -f 'node server.js' (if not using PM2)"
+}
+
+main
