@@ -46,7 +46,7 @@ sudo apt update && sudo apt upgrade -y
 
 log_info "Installing required system packages..."
 sudo apt install -y git curl wget build-essential tcl \
-    libsodium-dev libboost-system-dev xz-utils
+    libsodium-dev libboost-system-dev xz-utils jq   # added jq for JSON manipulation
 
 # ---------- Create 16GB swap file ----------
 log_info "Checking for existing swap..."
@@ -201,21 +201,36 @@ PKG_FILE="$APP_DIR/package.json"
 # Backup original
 sudo -u "$REAL_USER" cp "$PKG_FILE" "$PKG_FILE.bak"
 
-# Use jq if available, otherwise sed
+# Use jq to modify package.json (adds stratum, chokidar, and other required deps)
 if command -v jq &> /dev/null; then
+    # Update stratum dependency
     sudo -u "$REAL_USER" jq --arg url "$STRATUM_REPO#$STRATUM_VERSION" \
-        '.dependencies["foundation-stratum"] = $url' "$PKG_FILE" > "$PKG_FILE.tmp"
-    sudo -u "$REAL_USER" mv "$PKG_FILE.tmp" "$PKG_FILE"
+        '.dependencies["foundation-stratum"] = $url' "$PKG_FILE" > "$PKG_FILE.tmp" && mv "$PKG_FILE.tmp" "$PKG_FILE"
+
+    # Add chokidar (CommonJS compatible version) and other required deps if missing
+    sudo -u "$REAL_USER" jq '.dependencies["chokidar"] = "^3.5.3"' "$PKG_FILE" > "$PKG_FILE.tmp" && mv "$PKG_FILE.tmp" "$PKG_FILE"
+    # Ensure express, cors, redis are present (if not already)
+    sudo -u "$REAL_USER" jq '.dependencies["express"] = "^4.18.2"' "$PKG_FILE" > "$PKG_FILE.tmp" && mv "$PKG_FILE.tmp" "$PKG_FILE"
+    sudo -u "$REAL_USER" jq '.dependencies["cors"] = "^2.8.5"' "$PKG_FILE" > "$PKG_FILE.tmp" && mv "$PKG_FILE.tmp" "$PKG_FILE"
+    sudo -u "$REAL_USER" jq '.dependencies["redis"] = "^4.7.0"' "$PKG_FILE" > "$PKG_FILE.tmp" && mv "$PKG_FILE.tmp" "$PKG_FILE"
+
     log_info "package.json updated with jq"
 else
-    # Fallback to sed – more complex but works
+    # Fallback to sed – more complex but works (we'll just add minimal changes)
     sudo -u "$REAL_USER" sed -i \
         's|"foundation-stratum": "[^"]*"|"foundation-stratum": "git+'"$STRATUM_REPO"'#'"$STRATUM_VERSION"'"|' \
         "$PKG_FILE"
-    log_info "package.json updated with sed"
+    # Add chokidar by inserting a new dependency line after the first dependency
+    sudo -u "$REAL_USER" sed -i '/"dependencies": {/a \    "chokidar": "^3.5.3",' "$PKG_FILE"
+    # Ensure express, cors, redis are present
+    grep -q '"express"' "$PKG_FILE" || sudo -u "$REAL_USER" sed -i '/"dependencies": {/a \    "express": "^4.18.2",' "$PKG_FILE"
+    grep -q '"cors"' "$PKG_FILE" || sudo -u "$REAL_USER" sed -i '/"dependencies": {/a \    "cors": "^2.8.5",' "$PKG_FILE"
+    grep -q '"redis"' "$PKG_FILE" || sudo -u "$REAL_USER" sed -i '/"dependencies": {/a \    "redis": "^4.7.0",' "$PKG_FILE"
+    log_info "package.json updated with sed (basic)"
 fi
 
 log_info "Updated dependency: foundation-stratum -> $STRATUM_REPO#$STRATUM_VERSION"
+log_info "Added chokidar (CommonJS) and other required deps."
 
 # ---------- Install dependencies with C++14 flag ----------
 log_info "Installing npm dependencies (forcing C++14 for native addon)..."
@@ -308,10 +323,10 @@ log_info ""
 log_info "Next steps:"
 log_info "1. To set up main config, copy example.js to config.js and edit it."
 log_info "2. Add pool configs (JSON/JS) to $APP_DIR/configs/pools/"
-log_info "3. Restart after changes: sudo systemctl restart foundation-server"
+log_info "3. The pool will automatically restart when you edit/add pool configs (chokidar watches)."
 log_info "4. View logs: sudo journalctl -u foundation-server -f"
 log_info "5. Swap file (16GB) is active."
 log_info "6. Redis tuned for performance."
 log_info "7. Stratum module is now the optimized version from $STRATUM_REPO#$STRATUM_VERSION."
-log_info "8. .gitignore and .eslintrc.js have been created in the repository."
+log_info "8. .gitignore, .eslintrc.js, and required npm deps (chokidar, express, cors, redis) have been added."
 log_info "--------------------------------------------------"
