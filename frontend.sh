@@ -38,8 +38,8 @@ install_nodejs18() {
 ask_env_vars() {
     echo ""
     echo "Please configure the dashboard:"
-    read -p "API Base URL (e.g., http://localhost:3001/api/v1): " API_BASE_URL
-    API_BASE_URL=${API_BASE_URL:-http://localhost:3001/api/v1}
+    read -p "Backend API URL (e.g., http://localhost:3001): " API_BASE_URL
+    API_BASE_URL=${API_BASE_URL:-http://localhost:3001}
     read -p "Pool name (e.g., XRO, BTC, etc.): " DEFAULT_POOL
     DEFAULT_POOL=${DEFAULT_POOL:-BCA}
     read -p "Refresh interval in ms (default: 30000): " REFRESH_INTERVAL
@@ -85,6 +85,7 @@ main() {
     mkdir -p "$DASHBOARD_DIR"/{public/{css,js/utils},tests}
     cd "$DASHBOARD_DIR"
 
+    # .env – use relative API path, the proxy will handle it
     cat > .env << EOF
 API_BASE_URL=$API_BASE_URL
 DEFAULT_POOL=$DEFAULT_POOL
@@ -110,6 +111,7 @@ EOF
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "helmet": "^7.1.0",
+    "http-proxy-middleware": "^3.0.0",
     "morgan": "^1.10.0"
   },
   "devDependencies": {
@@ -131,18 +133,29 @@ import compression from 'compression';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
+import { createProxyMiddleware } from 'http-proxy-middleware';
+
 dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = process.env.PORT || 8080;
-const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3001/api/v1';
+const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3001';
 const defaultPool = process.env.DEFAULT_POOL || 'XRO';
 const refreshInterval = parseInt(process.env.REFRESH_INTERVAL) || 30000;
+
+// ----- Proxy API requests to backend -----
+app.use('/api', createProxyMiddleware({
+  target: apiBaseUrl,
+  changeOrigin: true,
+  pathRewrite: { '^/api': '/api' }, // keep /api
+}));
+
 app.use(compression());
-app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], connectSrc: ["'self'", apiBaseUrl.replace(/\/api\/v1.*$/, '')], styleSrc: ["'self'", "'unsafe-inline'"], scriptSrc: ["'self'", "'unsafe-inline'"] } } }));
+app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], connectSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], scriptSrc: ["'self'", "'unsafe-inline'"] } } }));
 app.use(morgan('combined'));
-app.use((req, res, next) => { res.locals.env = { API_BASE_URL: apiBaseUrl, DEFAULT_POOL: defaultPool, REFRESH_INTERVAL: refreshInterval }; next(); });
+app.use((req, res, next) => { res.locals.env = { API_BASE_URL: '/api/v1', DEFAULT_POOL: defaultPool, REFRESH_INTERVAL: refreshInterval }; next(); });
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1y', immutable: true }));
+
 app.get('/', (req, res) => {
   const envScript = `<script>window.__env = ${JSON.stringify(res.locals.env)};</script>`;
   const html = `
@@ -190,10 +203,13 @@ app.get('/', (req, res) => {
 </html>`;
   res.send(html);
 });
+
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+
 app.listen(port, () => console.log(`Dashboard running at http://localhost:${port}`));
 SERVEOF
 
+    # CSS and JS files (unchanged from previous version)
     cat > public/css/style.css << 'CSSEOF'
 :root { --primary: #1a1a2e; --secondary: #16213e; --accent: #0f3460; --highlight: #e94560; --success: #2ecc71; --warning: #f1c40f; --danger: #e74c3c; --text: #eee; --card-bg: #1e2a4a; --border-radius: 8px; --shadow: 0 4px 12px rgba(0,0,0,0.3); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -233,8 +249,8 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 CSSEOF
 
     cat > public/js/app.js << 'APPEOF'
-// dashboard frontend – with debugging and proper error handling
-const API_BASE = window.__env?.API_BASE_URL || 'http://localhost:3001/api/v1';
+// dashboard frontend – uses proxy, API_BASE is relative
+const API_BASE = window.__env?.API_BASE_URL || '/api/v1';
 const DEFAULT_POOL = window.__env?.DEFAULT_POOL || 'XRO';
 const REFRESH_INTERVAL = window.__env?.REFRESH_INTERVAL || 30000;
 
@@ -272,7 +288,7 @@ function setupEventListeners() {
 async function loadPoolData() {
   showLoading();
   const pool = DEFAULT_POOL;
-  const statsUrl = `${API_BASE}/${pool}/`;
+  const statsUrl = `${API_BASE}/${pool}/statistics`;
   const minersUrl = `${API_BASE}/${pool}/miners?method=active`;
   const blocksUrl = `${API_BASE}/${pool}/blocks`;
 
@@ -291,7 +307,7 @@ async function loadPoolData() {
     console.log('Miners response:', minersRes);
     console.log('Blocks response:', blocksRes);
 
-    // Try both data structures
+    // Both structures are supported
     const statsData = statsRes.body || statsRes;
     const minersData = minersRes.body || minersRes;
     const blocksData = blocksRes.body || blocksRes;
@@ -459,15 +475,15 @@ TESTOEF
     cat > README.md << 'READEOM'
 # Foundation Mining Dashboard
 
-A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, auto-refresh, caching.
+A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, auto-refresh, caching, and proxy to backend.
 
 ## Setup
 1. `npm install`
-2. Copy `.env.example` to `.env` and set `API_BASE_URL` and `DEFAULT_POOL`.
+2. Copy `.env.example` to `.env` and set `API_BASE_URL` (backend URL) and `DEFAULT_POOL`.
 3. `npm start`
 
 ## Environment
-- `API_BASE_URL`: your backend API (e.g., http://server:3001/api/v1)
+- `API_BASE_URL`: your backend URL (e.g., http://localhost:3001)
 - `DEFAULT_POOL`: pool name (e.g., XRO)
 - `REFRESH_INTERVAL`: ms (default 30000)
 - `PORT`: server port (default 8080)
@@ -484,7 +500,7 @@ READEOM
     log_info "To view logs: tail -f $DASHBOARD_DIR/dashboard.log (if using nohup)"
     log_info "To stop: pkill -f 'node.*server.js' (if using nohup) or pm2 stop mining-dashboard"
     echo ""
-    log_info "IMPORTANT: Open your browser's Developer Console (F12) to see debug logs."
+    log_info "IMPORTANT: The frontend proxies API requests to the backend, so no CORS issues."
     log_info "Check that the pool service is running: sudo systemctl status foundation-server"
 }
 
