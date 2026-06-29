@@ -1,5 +1,6 @@
 #!/bin/bash
 # frontend-setup.sh – creates and runs the Foundation Mining Dashboard
+# Directly calls the backend API (CORS is enabled in the backend)
 # Usage: ./frontend-setup.sh [--clean]
 #   --clean  - Remove any existing dashboard and PM2 processes before installing
 
@@ -84,8 +85,9 @@ install_nodejs18() {
 ask_env_vars() {
     echo ""
     echo "Please configure the dashboard:"
-    read -p "Backend API URL (e.g., http://localhost:3001): " API_BASE_URL
-    API_BASE_URL=${API_BASE_URL:-http://localhost:3001}
+    echo "Default backend API URL: http://localhost:3001/api/v1"
+    read -p "Backend API base URL (full path, e.g., http://localhost:3001/api/v1): " API_BASE_URL
+    API_BASE_URL=${API_BASE_URL:-http://localhost:3001/api/v1}
     read -p "Pool name (e.g., XRO, BTC, etc.): " DEFAULT_POOL
     DEFAULT_POOL=${DEFAULT_POOL:-BCA}
     read -p "Refresh interval in ms (default: 30000): " REFRESH_INTERVAL
@@ -147,7 +149,7 @@ main() {
     mkdir -p "$DASHBOARD_DIR"/{public/{css,js/utils},tests}
     cd "$DASHBOARD_DIR"
 
-    # .env
+    # .env – store the full API base URL
     cat > .env << EOF
 API_BASE_URL=$API_BASE_URL
 DEFAULT_POOL=$DEFAULT_POOL
@@ -173,7 +175,6 @@ EOF
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "helmet": "^7.1.0",
-    "http-proxy-middleware": "^3.0.0",
     "morgan": "^1.10.0"
   },
   "devDependencies": {
@@ -195,42 +196,32 @@ import compression from 'compression';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
-import { createProxyMiddleware } from 'http-proxy-middleware';
 
 dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = process.env.PORT || 8080;
-const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3001';
+const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3001/api/v1';
 const defaultPool = process.env.DEFAULT_POOL || 'XRO';
 const refreshInterval = parseInt(process.env.REFRESH_INTERVAL) || 30000;
 
-// ----- Proxy API requests to backend -----
-// All /api/* requests go to the backend on port 3001
-app.use('/api', createProxyMiddleware({
-  target: apiBaseUrl,
-  changeOrigin: true,
-  // No pathRewrite – we want to keep /api exactly as is
-  logLevel: 'debug',
-  onError: (err, req, res) => {
-    console.error('Proxy error:', err.message);
-    res.status(502).json({ error: 'Backend unreachable', details: err.message });
-  },
-  onProxyReq: (proxyReq, req, res) => {
-    console.log(`Proxying: ${req.method} ${req.url} -> ${apiBaseUrl}${req.url}`);
-  },
-}));
-
 app.use(compression());
-app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], connectSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], scriptSrc: ["'self'", "'unsafe-inline'"] } } }));
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: ["'self'", apiBaseUrl.replace(/\/api\/v1.*$/, '')],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"]
+    }
+  }
+}));
 app.use(morgan('combined'));
 app.use((req, res, next) => {
-  // Pass the pool name and other env vars to the frontend
   res.locals.env = {
-    API_BASE_URL: '/api/v1',
+    API_BASE_URL: apiBaseUrl,
     DEFAULT_POOL: defaultPool,
     REFRESH_INTERVAL: refreshInterval,
-    BACKEND_URL: apiBaseUrl,
   };
   next();
 });
@@ -328,8 +319,8 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 CSSEOF
 
     cat > public/js/app.js << 'APPEOF'
-// dashboard frontend – uses proxy, API_BASE is relative
-const API_BASE = window.__env?.API_BASE_URL || '/api/v1';
+// dashboard frontend – directly calls the backend API (CORS enabled)
+const API_BASE = window.__env?.API_BASE_URL || 'http://localhost:3001/api/v1';
 const DEFAULT_POOL = window.__env?.DEFAULT_POOL || 'XRO';
 const REFRESH_INTERVAL = window.__env?.REFRESH_INTERVAL || 30000;
 
@@ -553,15 +544,15 @@ TESTOEF
     cat > README.md << 'READEOM'
 # Foundation Mining Dashboard
 
-A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, auto-refresh, caching, and proxy to backend.
+A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, auto-refresh, caching.
 
 ## Setup
 1. `npm install`
-2. Copy `.env.example` to `.env` and set `API_BASE_URL` (backend URL) and `DEFAULT_POOL`.
+2. Copy `.env.example` to `.env` and set `API_BASE_URL` (full backend API URL) and `DEFAULT_POOL`.
 3. `npm start`
 
 ## Environment
-- `API_BASE_URL`: your backend URL (e.g., http://localhost:3001)
+- `API_BASE_URL`: full backend URL (e.g., http://localhost:3001/api/v1)
 - `DEFAULT_POOL`: pool name (e.g., XRO)
 - `REFRESH_INTERVAL`: ms (default 30000)
 - `PORT`: server port (default 8080)
@@ -578,9 +569,10 @@ READEOM
     log_info "To view logs: tail -f $DASHBOARD_DIR/dashboard.log (if using nohup)"
     log_info "To stop: pkill -f 'node.*server.js' (if using nohup) or pm2 stop mining-dashboard"
     echo ""
-    log_info "IMPORTANT: The frontend proxies API requests to the backend, so no CORS issues."
+    log_info "IMPORTANT: The dashboard directly calls the backend API (CORS is enabled in the backend)."
     log_info "Check that the pool service is running: sudo systemctl status foundation-server"
     log_info "If you still see no data, open your browser's developer console (F12) and check the Network tab."
+    log_info "Verify the API_BASE_URL in your .env file matches the actual backend URL."
 }
 
 main
