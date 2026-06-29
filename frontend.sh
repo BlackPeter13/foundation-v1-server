@@ -1,6 +1,6 @@
 #!/bin/bash
 # frontend-setup.sh – creates and runs the Foundation Mining Dashboard
-# Automatically fetches pool list from local backend.
+# Uses isolated Node.js 18 and runs npm with the isolated node binary.
 # Usage: ./frontend-setup.sh [--clean]
 
 set -euo pipefail
@@ -478,8 +478,9 @@ function setCachedData(key, data) {
 }
 APPEOF
 
-  log_info "Installing npm dependencies..."
-  $NODE_INSTALL_DIR/bin/npm install
+  log_info "Installing npm dependencies (using isolated Node.js 18)..."
+  # FIX: run npm with the isolated node binary explicitly
+  $NODE_INSTALL_DIR/bin/node $NODE_INSTALL_DIR/bin/npm install
 
   log_info "Starting dashboard..."
   start_dashboard
