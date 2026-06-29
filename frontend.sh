@@ -1,8 +1,7 @@
 #!/bin/bash
 # frontend-setup.sh – creates and runs the Foundation Mining Dashboard
-# Directly calls the backend API (CORS is enabled in the backend)
+# Dynamically loads pool list from the backend and lets you switch pools.
 # Usage: ./frontend-setup.sh [--clean]
-#   --clean  - Remove any existing dashboard and PM2 processes before installing
 
 set -euo pipefail
 
@@ -85,11 +84,8 @@ install_nodejs18() {
 ask_env_vars() {
     echo ""
     echo "Please configure the dashboard:"
-    echo "Default backend API URL: http://localhost:3001/api/v1"
-    read -p "Backend API base URL (full path, e.g., http://localhost:3001/api/v1): " API_BASE_URL
+    read -p "Backend API base URL (e.g., http://localhost:3001/api/v1): " API_BASE_URL
     API_BASE_URL=${API_BASE_URL:-http://localhost:3001/api/v1}
-    read -p "Pool name (e.g., XRO, BTC, etc.): " DEFAULT_POOL
-    DEFAULT_POOL=${DEFAULT_POOL:-BCA}
     read -p "Refresh interval in ms (default: 30000): " REFRESH_INTERVAL
     REFRESH_INTERVAL=${REFRESH_INTERVAL:-30000}
     read -p "Dashboard port (default: 8080): " PORT
@@ -149,10 +145,9 @@ main() {
     mkdir -p "$DASHBOARD_DIR"/{public/{css,js/utils},tests}
     cd "$DASHBOARD_DIR"
 
-    # .env – store the full API base URL
+    # .env – store the full API base URL (no default pool)
     cat > .env << EOF
 API_BASE_URL=$API_BASE_URL
-DEFAULT_POOL=$DEFAULT_POOL
 REFRESH_INTERVAL=$REFRESH_INTERVAL
 PORT=$PORT
 EOF
@@ -202,7 +197,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = process.env.PORT || 8080;
 const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3001/api/v1';
-const defaultPool = process.env.DEFAULT_POOL || 'XRO';
 const refreshInterval = parseInt(process.env.REFRESH_INTERVAL) || 30000;
 
 app.use(compression());
@@ -220,7 +214,6 @@ app.use(morgan('combined'));
 app.use((req, res, next) => {
   res.locals.env = {
     API_BASE_URL: apiBaseUrl,
-    DEFAULT_POOL: defaultPool,
     REFRESH_INTERVAL: refreshInterval,
   };
   next();
@@ -243,7 +236,10 @@ app.get('/', (req, res) => {
   <div id="app">
     <header class="header">
       <h1>⚡ Foundation Mining Pool</h1>
-      <div class="pool-label">Pool: <span id="pool-name"></span></div>
+      <div class="pool-selector-wrapper">
+        <label for="pool-selector">Pool:</label>
+        <select id="pool-selector"></select>
+      </div>
     </header>
     <section class="stats-grid" id="stats"></section>
     <div class="search-container">
@@ -287,8 +283,8 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
 .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 1rem 0; border-bottom: 2px solid var(--accent); margin-bottom: 2rem; }
 .header h1 { font-size: 1.8rem; color: var(--highlight); }
-.pool-label { font-size: 1.2rem; color: #aaa; }
-.pool-label span { color: var(--highlight); font-weight: bold; }
+.pool-selector-wrapper { display: flex; align-items: center; gap: 0.5rem; }
+.pool-selector-wrapper select { background: var(--card-bg); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem; cursor: pointer; }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 1rem; margin-bottom: 2rem; }
 .stat-card { background: var(--card-bg); padding: 1rem; border-radius: var(--border-radius); text-align: center; box-shadow: var(--shadow); }
 .stat-card span { display: block; font-size: 0.8rem; text-transform: uppercase; color: #aaa; letter-spacing: 0.5px; }
@@ -319,9 +315,8 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 CSSEOF
 
     cat > public/js/app.js << 'APPEOF'
-// dashboard frontend – directly calls the backend API (CORS enabled)
+// dashboard frontend – fetches pool list and allows switching
 const API_BASE = window.__env?.API_BASE_URL || 'http://localhost:3001/api/v1';
-const DEFAULT_POOL = window.__env?.DEFAULT_POOL || 'XRO';
 const REFRESH_INTERVAL = window.__env?.REFRESH_INTERVAL || 30000;
 
 const elements = {
@@ -333,31 +328,69 @@ const elements = {
   search: document.getElementById('search'),
   skeleton: document.getElementById('skeleton'),
   status: document.getElementById('status'),
-  poolName: document.getElementById('pool-name')
+  poolSelector: document.getElementById('pool-selector')
 };
 
 let allMiners = [];
 let refreshTimer = null;
+let currentPool = null;
 
 document.addEventListener('DOMContentLoaded', () => {
-  if (elements.poolName) elements.poolName.textContent = DEFAULT_POOL;
-  console.log('Dashboard starting – pool:', DEFAULT_POOL, 'API base:', API_BASE);
+  console.log('Dashboard starting – API base:', API_BASE);
   init();
 });
 
 function init() {
   setupEventListeners();
-  loadPoolData();
-  scheduleAutoRefresh();
+  loadPoolList();
 }
 
 function setupEventListeners() {
   elements.search.addEventListener('input', debounce(handleSearch, 300));
+  elements.poolSelector.addEventListener('change', (e) => {
+    currentPool = e.target.value;
+    if (currentPool) {
+      loadPoolData();
+    }
+  });
+}
+
+async function loadPoolList() {
+  try {
+    const url = `${API_BASE}/pools`;
+    console.log('Fetching pool list from:', url);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status} – ${res.statusText}`);
+    const pools = await res.json();
+
+    const select = elements.poolSelector;
+    select.innerHTML = '';
+    if (!pools || pools.length === 0) {
+      select.innerHTML = '<option value="">No pools available</option>';
+      showError('No pools found on the backend.');
+      return;
+    }
+    pools.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      select.appendChild(opt);
+    });
+    // Select the first pool
+    currentPool = pools[0];
+    select.value = currentPool;
+    loadPoolData();
+    scheduleAutoRefresh();
+  } catch (err) {
+    console.error('Error loading pool list:', err);
+    showError('Could not fetch pool list: ' + err.message);
+  }
 }
 
 async function loadPoolData() {
+  if (!currentPool) return;
   showLoading();
-  const pool = DEFAULT_POOL;
+  const pool = currentPool;
   const statsUrl = `${API_BASE}/${pool}/`;
   const minersUrl = `${API_BASE}/${pool}/miners?method=active`;
   const blocksUrl = `${API_BASE}/${pool}/blocks`;
@@ -544,16 +577,15 @@ TESTOEF
     cat > README.md << 'READEOM'
 # Foundation Mining Dashboard
 
-A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, auto-refresh, caching.
+A real-time dashboard for foundation-v1-server. Features: live stats, miners list, blocks, auto-refresh, caching, and dynamic pool selection.
 
 ## Setup
 1. `npm install`
-2. Copy `.env.example` to `.env` and set `API_BASE_URL` (full backend API URL) and `DEFAULT_POOL`.
+2. Copy `.env.example` to `.env` and set `API_BASE_URL` (full backend API URL).
 3. `npm start`
 
 ## Environment
 - `API_BASE_URL`: full backend URL (e.g., http://localhost:3001/api/v1)
-- `DEFAULT_POOL`: pool name (e.g., XRO)
 - `REFRESH_INTERVAL`: ms (default 30000)
 - `PORT`: server port (default 8080)
 READEOM
@@ -569,10 +601,9 @@ READEOM
     log_info "To view logs: tail -f $DASHBOARD_DIR/dashboard.log (if using nohup)"
     log_info "To stop: pkill -f 'node.*server.js' (if using nohup) or pm2 stop mining-dashboard"
     echo ""
-    log_info "IMPORTANT: The dashboard directly calls the backend API (CORS is enabled in the backend)."
-    log_info "Check that the pool service is running: sudo systemctl status foundation-server"
-    log_info "If you still see no data, open your browser's developer console (F12) and check the Network tab."
-    log_info "Verify the API_BASE_URL in your .env file matches the actual backend URL."
+    log_info "The dashboard automatically fetches the list of running pools from the backend."
+    log_info "Use the dropdown to switch between pools."
+    log_info "If you see no pools, check that the backend is running and has pools defined."
 }
 
 main
