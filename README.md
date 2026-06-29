@@ -20,3 +20,4 @@ If you need help with a code-related matter, the first place to look is our [Dis
 Released under the GNU General Public License v2. See http://www.gnu.org/licenses/gpl-2.0.html for more information
 
 ---
+curl --user rpcuser:rpcpass --data-binary '{"jsonrpc":"1.0","id":"test","method":"getblockchaininfo","params":[]}' -H 'content-type:text/plain;' http://127.0.0.1:8332/
