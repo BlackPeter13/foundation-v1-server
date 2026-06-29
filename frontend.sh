@@ -1,6 +1,7 @@
 #!/bin/bash
 # frontend-setup.sh – creates and runs the Foundation Mining Dashboard
-# Dynamically loads pool list from the backend and lets you switch pools.
+# Uses the local backend API at http://localhost:3001/api/v1
+# Automatically fetches the pool list and selects the first pool.
 # Usage: ./frontend-setup.sh [--clean]
 
 set -euo pipefail
@@ -80,18 +81,6 @@ install_nodejs18() {
     fi
 }
 
-# ---------- Interactive .env configuration ----------
-ask_env_vars() {
-    echo ""
-    echo "Please configure the dashboard:"
-    read -p "Backend API base URL (e.g., http://localhost:3001/api/v1): " API_BASE_URL
-    API_BASE_URL=${API_BASE_URL:-http://localhost:3001/api/v1}
-    read -p "Refresh interval in ms (default: 30000): " REFRESH_INTERVAL
-    REFRESH_INTERVAL=${REFRESH_INTERVAL:-30000}
-    read -p "Dashboard port (default: 8080): " PORT
-    PORT=${PORT:-8080}
-}
-
 # ---------- Start dashboard using isolated Node.js ----------
 start_dashboard() {
     cd "$DASHBOARD_DIR"
@@ -116,8 +105,8 @@ show_url() {
         IP="localhost"
     fi
     echo ""
-    log_info "Dashboard is accessible at: http://$IP:$PORT"
-    log_info "If you are on the same machine, also: http://localhost:$PORT"
+    log_info "Dashboard is accessible at: http://$IP:8080"
+    log_info "If you are on the same machine, also: http://localhost:8080"
 }
 
 # ---------- Main ----------
@@ -139,17 +128,16 @@ main() {
     fi
 
     install_nodejs18
-    ask_env_vars
 
     log_info "Creating dashboard at $DASHBOARD_DIR"
     mkdir -p "$DASHBOARD_DIR"/{public/{css,js/utils},tests}
     cd "$DASHBOARD_DIR"
 
-    # .env – store the full API base URL (no default pool)
+    # .env – fixed local API URL, no prompts
     cat > .env << EOF
-API_BASE_URL=$API_BASE_URL
-REFRESH_INTERVAL=$REFRESH_INTERVAL
-PORT=$PORT
+API_BASE_URL=http://localhost:3001/api/v1
+REFRESH_INTERVAL=30000
+PORT=8080
 EOF
 
     cat > package.json << 'PKGEOF'
@@ -239,8 +227,6 @@ app.get('/', (req, res) => {
       <div class="pool-selector-wrapper">
         <label for="pool-selector">Pool:</label>
         <select id="pool-selector"></select>
-        <input type="text" id="manual-pool" placeholder="Or type pool name" style="display:none; background: var(--secondary); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem;">
-        <button id="manual-go" style="display:none; background: var(--accent); color: white; border: none; padding: 0.4rem 1rem; border-radius: var(--border-radius); cursor: pointer;">Go</button>
       </div>
     </header>
     <section class="stats-grid" id="stats"></section>
@@ -285,10 +271,8 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
 .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 1rem 0; border-bottom: 2px solid var(--accent); margin-bottom: 2rem; }
 .header h1 { font-size: 1.8rem; color: var(--highlight); }
-.pool-selector-wrapper { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-.pool-selector-wrapper select, .pool-selector-wrapper input, .pool-selector-wrapper button { background: var(--card-bg); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem; }
-.pool-selector-wrapper button { background: var(--accent); color: white; cursor: pointer; border: none; }
-.pool-selector-wrapper button:hover { background: var(--highlight); }
+.pool-selector-wrapper { display: flex; align-items: center; gap: 0.5rem; }
+.pool-selector-wrapper select { background: var(--card-bg); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem; cursor: pointer; }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 1rem; margin-bottom: 2rem; }
 .stat-card { background: var(--card-bg); padding: 1rem; border-radius: var(--border-radius); text-align: center; box-shadow: var(--shadow); }
 .stat-card span { display: block; font-size: 0.8rem; text-transform: uppercase; color: #aaa; letter-spacing: 0.5px; }
@@ -332,9 +316,7 @@ const elements = {
   search: document.getElementById('search'),
   skeleton: document.getElementById('skeleton'),
   status: document.getElementById('status'),
-  poolSelector: document.getElementById('pool-selector'),
-  manualPool: document.getElementById('manual-pool'),
-  manualGo: document.getElementById('manual-go')
+  poolSelector: document.getElementById('pool-selector')
 };
 
 let allMiners = [];
@@ -359,19 +341,6 @@ function setupEventListeners() {
       loadPoolData();
     }
   });
-  // Manual pool input
-  elements.manualGo.addEventListener('click', () => {
-    const val = elements.manualPool.value.trim();
-    if (val) {
-      currentPool = val;
-      loadPoolData();
-    }
-  });
-  elements.manualPool.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      elements.manualGo.click();
-    }
-  });
 }
 
 async function loadPoolList() {
@@ -388,14 +357,8 @@ async function loadPoolList() {
     if (!pools || pools.length === 0) {
       select.innerHTML = '<option value="">No pools available</option>';
       showError('No pools found on the backend.');
-      // Show manual input
-      elements.manualPool.style.display = 'inline-block';
-      elements.manualGo.style.display = 'inline-block';
       return;
     }
-    // Hide manual input if pools exist
-    elements.manualPool.style.display = 'none';
-    elements.manualGo.style.display = 'none';
 
     pools.forEach(p => {
       const opt = document.createElement('option');
@@ -411,10 +374,6 @@ async function loadPoolList() {
   } catch (err) {
     console.error('Error loading pool list:', err);
     showError('Could not fetch pool list: ' + err.message);
-    // Show manual input as fallback
-    elements.manualPool.style.display = 'inline-block';
-    elements.manualGo.style.display = 'inline-block';
-    elements.manualPool.placeholder = 'Enter pool name manually';
   }
 }
 
@@ -612,11 +571,11 @@ A real-time dashboard for foundation-v1-server. Features: live stats, miners lis
 
 ## Setup
 1. `npm install`
-2. Copy `.env.example` to `.env` and set `API_BASE_URL` (full backend API URL).
+2. Edit `.env` if you need to change the backend URL (default: http://localhost:3001/api/v1).
 3. `npm start`
 
 ## Environment
-- `API_BASE_URL`: full backend URL (e.g., http://localhost:3001/api/v1)
+- `API_BASE_URL`: backend URL (default: http://localhost:3001/api/v1)
 - `REFRESH_INTERVAL`: ms (default 30000)
 - `PORT`: server port (default 8080)
 READEOM
@@ -633,7 +592,7 @@ READEOM
     log_info "To stop: pkill -f 'node.*server.js' (if using nohup) or pm2 stop mining-dashboard"
     echo ""
     log_info "The dashboard automatically fetches the list of running pools from the backend."
-    log_info "Use the dropdown to switch between pools. If the dropdown fails, a manual input field appears."
+    log_info "It will show the first pool by default. Use the dropdown to switch pools."
     log_info "If you see no pools, check that the backend is running and has pools defined."
 }
 
