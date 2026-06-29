@@ -1,6 +1,5 @@
 #!/bin/bash
 # frontend-setup.sh – creates and runs the Foundation Mining Dashboard
-# Uses isolated Node.js 18 and runs npm with the isolated node binary.
 # Usage: ./frontend-setup.sh [--clean]
 
 set -euo pipefail
@@ -65,9 +64,14 @@ start_dashboard() {
 }
 
 show_url() {
-  IP=$(ip route get 1 2>/dev/null | awk '{print $NF; exit}' || hostname -I | awk '{print $1}')
+  # Get the primary IP address (non-loopback)
+  IP=$(hostname -I | awk '{print $1}')
+  if [ -z "$IP" ]; then
+    IP="localhost"
+  fi
   echo ""
-  log_info "Dashboard: http://${IP:-localhost}:8080"
+  log_info "Dashboard: http://$IP:8080"
+  log_info "Also available at: http://localhost:8080 (only from this machine)"
 }
 
 main() {
@@ -201,7 +205,11 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
-app.listen(port, () => console.log(`Dashboard running on port ${port}`));
+
+// Bind to all interfaces (0.0.0.0) so it's accessible from other devices
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Dashboard running on port ${port}`);
+});
 SERVEOF
 
   cat > public/css/style.css << 'CSSEOF'
@@ -479,7 +487,6 @@ function setCachedData(key, data) {
 APPEOF
 
   log_info "Installing npm dependencies (using isolated Node.js 18)..."
-  # FIX: run npm with the isolated node binary explicitly
   $NODE_INSTALL_DIR/bin/node $NODE_INSTALL_DIR/bin/npm install
 
   log_info "Starting dashboard..."
