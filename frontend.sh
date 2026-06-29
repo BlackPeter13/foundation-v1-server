@@ -239,6 +239,8 @@ app.get('/', (req, res) => {
       <div class="pool-selector-wrapper">
         <label for="pool-selector">Pool:</label>
         <select id="pool-selector"></select>
+        <input type="text" id="manual-pool" placeholder="Or type pool name" style="display:none; background: var(--secondary); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem;">
+        <button id="manual-go" style="display:none; background: var(--accent); color: white; border: none; padding: 0.4rem 1rem; border-radius: var(--border-radius); cursor: pointer;">Go</button>
       </div>
     </header>
     <section class="stats-grid" id="stats"></section>
@@ -283,8 +285,10 @@ body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
 .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 1rem 0; border-bottom: 2px solid var(--accent); margin-bottom: 2rem; }
 .header h1 { font-size: 1.8rem; color: var(--highlight); }
-.pool-selector-wrapper { display: flex; align-items: center; gap: 0.5rem; }
-.pool-selector-wrapper select { background: var(--card-bg); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem; cursor: pointer; }
+.pool-selector-wrapper { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.pool-selector-wrapper select, .pool-selector-wrapper input, .pool-selector-wrapper button { background: var(--card-bg); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem; }
+.pool-selector-wrapper button { background: var(--accent); color: white; cursor: pointer; border: none; }
+.pool-selector-wrapper button:hover { background: var(--highlight); }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 1rem; margin-bottom: 2rem; }
 .stat-card { background: var(--card-bg); padding: 1rem; border-radius: var(--border-radius); text-align: center; box-shadow: var(--shadow); }
 .stat-card span { display: block; font-size: 0.8rem; text-transform: uppercase; color: #aaa; letter-spacing: 0.5px; }
@@ -328,7 +332,9 @@ const elements = {
   search: document.getElementById('search'),
   skeleton: document.getElementById('skeleton'),
   status: document.getElementById('status'),
-  poolSelector: document.getElementById('pool-selector')
+  poolSelector: document.getElementById('pool-selector'),
+  manualPool: document.getElementById('manual-pool'),
+  manualGo: document.getElementById('manual-go')
 };
 
 let allMiners = [];
@@ -353,6 +359,19 @@ function setupEventListeners() {
       loadPoolData();
     }
   });
+  // Manual pool input
+  elements.manualGo.addEventListener('click', () => {
+    const val = elements.manualPool.value.trim();
+    if (val) {
+      currentPool = val;
+      loadPoolData();
+    }
+  });
+  elements.manualPool.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      elements.manualGo.click();
+    }
+  });
 }
 
 async function loadPoolList() {
@@ -362,14 +381,22 @@ async function loadPoolList() {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status} – ${res.statusText}`);
     const pools = await res.json();
+    console.log('Pools received:', pools);
 
     const select = elements.poolSelector;
     select.innerHTML = '';
     if (!pools || pools.length === 0) {
       select.innerHTML = '<option value="">No pools available</option>';
       showError('No pools found on the backend.');
+      // Show manual input
+      elements.manualPool.style.display = 'inline-block';
+      elements.manualGo.style.display = 'inline-block';
       return;
     }
+    // Hide manual input if pools exist
+    elements.manualPool.style.display = 'none';
+    elements.manualGo.style.display = 'none';
+
     pools.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p;
@@ -384,6 +411,10 @@ async function loadPoolList() {
   } catch (err) {
     console.error('Error loading pool list:', err);
     showError('Could not fetch pool list: ' + err.message);
+    // Show manual input as fallback
+    elements.manualPool.style.display = 'inline-block';
+    elements.manualGo.style.display = 'inline-block';
+    elements.manualPool.placeholder = 'Enter pool name manually';
   }
 }
 
@@ -602,7 +633,7 @@ READEOM
     log_info "To stop: pkill -f 'node.*server.js' (if using nohup) or pm2 stop mining-dashboard"
     echo ""
     log_info "The dashboard automatically fetches the list of running pools from the backend."
-    log_info "Use the dropdown to switch between pools."
+    log_info "Use the dropdown to switch between pools. If the dropdown fails, a manual input field appears."
     log_info "If you see no pools, check that the backend is running and has pools defined."
 }
 
