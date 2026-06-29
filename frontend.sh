@@ -1,6 +1,7 @@
 #!/bin/bash
 # frontend-setup.sh – creates and runs the Foundation Mining Dashboard
-# Uses an isolated Node.js 18 installation (does not affect the pool's Node 14)
+# Usage: ./frontend-setup.sh [--clean]
+#   --clean  - Remove any existing dashboard and PM2 processes before installing
 
 set -euo pipefail
 
@@ -10,10 +11,59 @@ NODE_VERSION="18.20.8"
 NODE_DISTRO="linux-x64"
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_DISTRO}.tar.xz"
 NODE_INSTALL_DIR="/opt/nodejs-18"
+CLEAN_INSTALL=false
+
+# ---------- Parse arguments ----------
+for arg in "$@"; do
+  case $arg in
+    --clean|-c)
+      CLEAN_INSTALL=true
+      shift
+      ;;
+    *)
+      ;;
+  esac
+done
 
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 log_warn()  { echo -e "\033[1;33m[WARN]\033[0m $1"; }
 log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; exit 1; }
+
+# ---------- Clean old installation ----------
+clean_old_installation() {
+  log_info "Performing clean installation..."
+
+  # Stop PM2 process if it exists
+  if command -v pm2 &> /dev/null; then
+    if pm2 list | grep -q "mining-dashboard"; then
+      log_info "Stopping PM2 process: mining-dashboard"
+      pm2 stop mining-dashboard 2>/dev/null || true
+      pm2 delete mining-dashboard 2>/dev/null || true
+    fi
+  fi
+
+  # Kill any node process running server.js from the dashboard directory
+  if [ -d "$DASHBOARD_DIR" ]; then
+    log_info "Killing any node processes running from $DASHBOARD_DIR"
+    pkill -f "node.*$DASHBOARD_DIR.*server.js" 2>/dev/null || true
+  fi
+
+  # Remove the dashboard directory
+  if [ -d "$DASHBOARD_DIR" ]; then
+    log_info "Removing old dashboard directory: $DASHBOARD_DIR"
+    rm -rf "$DASHBOARD_DIR"
+  else
+    log_info "No existing dashboard directory found."
+  fi
+
+  # Remove isolated Node.js 18 if it exists (we'll reinstall it)
+  if [ -d "$NODE_INSTALL_DIR" ]; then
+    log_info "Removing isolated Node.js 18 installation: $NODE_INSTALL_DIR"
+    sudo rm -rf "$NODE_INSTALL_DIR"
+  fi
+
+  log_info "Clean installation preparation complete."
+}
 
 # ---------- Install isolated Node.js 18 ----------
 install_nodejs18() {
@@ -78,6 +128,23 @@ show_url() {
 
 # ---------- Main ----------
 main() {
+    # If clean install flag is set, clean everything first
+    if [ "$CLEAN_INSTALL" = true ]; then
+        clean_old_installation
+    else
+        # Ask the user if they want to remove existing installation
+        if [ -d "$DASHBOARD_DIR" ]; then
+            echo ""
+            log_warn "Existing dashboard directory found: $DASHBOARD_DIR"
+            read -p "Do you want to remove it and perform a clean install? (yes/no): " REMOVE_OLD
+            if [[ "$REMOVE_OLD" =~ ^[Yy](es)?$ ]]; then
+                clean_old_installation
+            else
+                log_info "Keeping existing dashboard directory. Will overwrite files."
+            fi
+        fi
+    fi
+
     install_nodejs18
     ask_env_vars
 
@@ -148,6 +215,7 @@ app.use('/api', createProxyMiddleware({
   target: apiBaseUrl,
   changeOrigin: true,
   pathRewrite: { '^/api': '/api' }, // keep /api
+  logLevel: 'debug',
 }));
 
 app.use(compression());
@@ -209,7 +277,6 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 app.listen(port, () => console.log(`Dashboard running at http://localhost:${port}`));
 SERVEOF
 
-    # CSS and JS files (unchanged from previous version)
     cat > public/css/style.css << 'CSSEOF'
 :root { --primary: #1a1a2e; --secondary: #16213e; --accent: #0f3460; --highlight: #e94560; --success: #2ecc71; --warning: #f1c40f; --danger: #e74c3c; --text: #eee; --card-bg: #1e2a4a; --border-radius: 8px; --shadow: 0 4px 12px rgba(0,0,0,0.3); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -288,7 +355,8 @@ function setupEventListeners() {
 async function loadPoolData() {
   showLoading();
   const pool = DEFAULT_POOL;
-  const statsUrl = `${API_BASE}/${pool}/statistics`;
+  // --- FIXED: use root endpoint for stats, not /statistics ---
+  const statsUrl = `${API_BASE}/${pool}/`;
   const minersUrl = `${API_BASE}/${pool}/miners?method=active`;
   const blocksUrl = `${API_BASE}/${pool}/blocks`;
 
@@ -502,6 +570,7 @@ READEOM
     echo ""
     log_info "IMPORTANT: The frontend proxies API requests to the backend, so no CORS issues."
     log_info "Check that the pool service is running: sudo systemctl status foundation-server"
+    log_info "If you still see no data, open your browser's developer console (F12) and check the Network tab."
 }
 
 main
