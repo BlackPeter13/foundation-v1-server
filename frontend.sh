@@ -1,5 +1,5 @@
 #!/bin/bash
-# frontend-simple.sh – creates and runs a simple pool dashboard
+# frontend-simple.sh – full dashboard with payments
 # Usage: ./frontend-simple.sh [--clean]
 
 set -euo pipefail
@@ -92,7 +92,7 @@ main() {
   mkdir -p "$DASHBOARD_DIR"/public
   cd "$DASHBOARD_DIR"
 
-  # Simple server.js – serves static files and a health endpoint
+  # Server.js
   cat > server.js << 'SERVEOF'
 import express from 'express';
 import path from 'path';
@@ -102,10 +102,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = 8080;
 
-// Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Health check
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
 app.listen(port, '0.0.0.0', () => {
@@ -113,45 +110,98 @@ app.listen(port, '0.0.0.0', () => {
 });
 SERVEOF
 
-  # The main HTML page – fetches all pools and displays stats
+  # Full HTML with stats, blocks, miners, and payments
   cat > public/index.html << 'HTMLEOF'
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mining Pool Dashboard</title>
+  <title>⚡ Foundation Pool Dashboard</title>
   <style>
-    body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #00ff41; padding: 20px; }
-    h1 { text-shadow: 0 0 10px #00ff41; border-bottom: 2px solid #00ff41; padding-bottom: 10px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-    th, td { border: 1px solid #00ff41; padding: 8px 12px; text-align: left; }
-    th { background: #1a1a1a; text-transform: uppercase; letter-spacing: 2px; }
-    tr:nth-child(even) { background: #0a0a0a; }
+    body {
+      font-family: 'Courier New', monospace;
+      background: #0a0a0a;
+      color: #33ff33;
+      padding: 20px;
+      margin: 0;
+      text-shadow: 0 0 5px #33ff33;
+    }
+    h1 {
+      font-size: 2.5rem;
+      border-bottom: 2px solid #33ff33;
+      padding-bottom: 10px;
+      text-shadow: 0 0 15px #33ff33;
+      letter-spacing: 4px;
+    }
+    .status {
+      margin: 10px 0;
+      font-size: 0.9rem;
+      color: #88ff88;
+    }
+    .refresh {
+      cursor: pointer;
+      color: #33ff33;
+      text-decoration: underline;
+    }
+    .refresh:hover { color: #ffffff; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+      font-size: 0.85rem;
+    }
+    th, td {
+      border: 1px solid #33ff33;
+      padding: 5px 8px;
+      text-align: left;
+      vertical-align: middle;
+    }
+    th {
+      background: #111;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: normal;
+      color: #88ff88;
+      white-space: nowrap;
+    }
+    tr:nth-child(even) { background: #0d0d0d; }
     tr:hover { background: #1a2a1a; }
-    .hashrate { color: #2ecc71; }
-    .error { color: #ff4444; }
-    .footer { margin-top: 20px; font-size: 0.8rem; color: #666; }
-    .refresh { cursor: pointer; color: #00ff41; text-decoration: underline; }
-    .refresh:hover { color: #fff; }
-    .status { margin: 10px 0; }
+    .hashrate { color: #2ecc71; font-weight: bold; }
+    .error { color: #ff4444; font-weight: bold; }
+    .footer {
+      margin-top: 30px;
+      font-size: 0.8rem;
+      color: #666;
+      border-top: 1px solid #33ff33;
+      padding-top: 15px;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    @media (max-width: 768px) {
+      h1 { font-size: 1.8rem; }
+      table { font-size: 0.7rem; }
+    }
   </style>
 </head>
 <body>
   <h1>⚡ Foundation Pool Dashboard</h1>
-  <div id="status" class="status">Loading pool list…</div>
+  <div id="status" class="status">⏳ Loading pool data…</div>
   <div id="content"></div>
   <div class="footer">
-    Auto‑refresh every 30 seconds &nbsp;|&nbsp; <span class="refresh" onclick="fetchData()">⟳ Refresh now</span>
+    <span>🔄 Refresh: <span id="intervalDisplay">60</span>s</span>
+    <span class="refresh" onclick="fetchData()">⟳ Refresh now</span>
   </div>
 
   <script>
     const API_BASE = 'http://localhost:3001/api/v1';
+    const REFRESH_INTERVAL = 60000; // 60 seconds
 
     async function fetchData() {
       const status = document.getElementById('status');
       const content = document.getElementById('content');
-      status.textContent = 'Fetching pool list…';
+      status.textContent = '⏳ Fetching pool list…';
       content.innerHTML = '';
 
       try {
@@ -165,23 +215,40 @@ SERVEOF
           return;
         }
 
-        status.textContent = `Fetching data for ${pools.length} pool(s)…`;
+        status.textContent = `⏳ Fetching data for ${pools.length} pool(s)…`;
 
-        // 2. Fetch stats for each pool
-        const statsPromises = pools.map(async (pool) => {
+        // 2. For each pool, fetch stats, blocks, miners, and payments
+        const results = await Promise.all(pools.map(async (pool) => {
           try {
-            const res = await fetch(`${API_BASE}/${pool}/`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            return { pool, data: data.primary || data.body?.primary || {} };
+            const [statsRes, blocksRes, minersRes, paymentsRes] = await Promise.all([
+              fetch(`${API_BASE}/${pool}/`),
+              fetch(`${API_BASE}/${pool}/blocks`),
+              fetch(`${API_BASE}/${pool}/miners?method=active`),
+              fetch(`${API_BASE}/${pool}/payments`)
+            ]);
+            if (!statsRes.ok) throw new Error(`Stats HTTP ${statsRes.status}`);
+            if (!blocksRes.ok) throw new Error(`Blocks HTTP ${blocksRes.status}`);
+            if (!minersRes.ok) throw new Error(`Miners HTTP ${minersRes.status}`);
+            if (!paymentsRes.ok) throw new Error(`Payments HTTP ${paymentsRes.status}`);
+
+            const stats = await statsRes.json();
+            const blocks = await blocksRes.json();
+            const miners = await minersRes.json();
+            const payments = await paymentsRes.json();
+
+            return {
+              pool,
+              stats: stats.primary || stats.body?.primary || {},
+              blocks: blocks.primary || blocks.body?.primary || {},
+              miners: miners.primary || miners.body?.primary || {},
+              payments: payments.primary || payments.body?.primary || {}
+            };
           } catch (err) {
             return { pool, error: err.message };
           }
-        });
+        }));
 
-        const results = await Promise.all(statsPromises);
-
-        // 3. Build table
+        // 3. Build table with all columns
         let html = `<table>
           <thead>
             <tr>
@@ -190,32 +257,87 @@ SERVEOF
               <th>Miners</th>
               <th>Workers</th>
               <th>Valid Blocks</th>
-              <th>Network Difficulty</th>
-              <th>Block Height</th>
+              <th>Pending Blocks</th>
+              <th>Shares (V/S/I)</th>
+              <th>Network Diff</th>
+              <th>Height</th>
+              <th>Reward</th>
+              <th>Fee</th>
+              <th>Payment Interval</th>
+              <th>Last Block</th>
+              <th>Effort (%)</th>
+              <th>Pending Balance</th>
+              <th>Total Paid</th>
             </tr>
           </thead>
           <tbody>`;
 
         let hasData = false;
-        for (const result of results) {
-          if (result.error) {
-            html += `<tr><td>${result.pool}</td><td colspan="6" class="error">⚠️ ${result.error}</td></tr>`;
+        for (const r of results) {
+          if (r.error) {
+            html += `<tr><td>${r.pool}</td><td colspan="15" class="error">⚠️ ${r.error}</td></tr>`;
             continue;
           }
-          const p = result.data;
-          const hashrate = p.hashrate || { shared: 0, solo: 0 };
+          const s = r.stats;
+          const b = r.blocks;
+          const p = r.payments;
+          const config = s.config || {};
+          const hashrate = s.hashrate || { shared: 0, solo: 0 };
           const totalHash = (hashrate.shared || 0) + (hashrate.solo || 0);
-          const blocks = p.blocks || { valid: 0 };
-          const network = p.network || { difficulty: 'N/A', height: 'N/A' };
-          const statusObj = p.status || { miners: 0, workers: 0 };
+          const blocks = s.blocks || { valid: 0 };
+          const shares = s.shares || { valid: 0, stale: 0, invalid: 0 };
+          const network = s.network || { difficulty: 'N/A', height: 'N/A' };
+          const statusObj = s.status || { miners: 0, workers: 0, effort: 0 };
+          const reward = config.coinbasevalue || 'N/A';
+          const fee = config.recipientFee ? (config.recipientFee * 100).toFixed(2) + '%' : 'N/A';
+          const paymentInterval = config.paymentInterval ? (config.paymentInterval / 60).toFixed(0) + ' min' : 'N/A';
+
+          // Pending blocks
+          const pendingCount = b.pending ? b.pending.length : 0;
+
+          // Last block
+          const confirmed = b.confirmed || [];
+          let lastBlock = 'N/A';
+          if (confirmed.length > 0) {
+            const last = confirmed.sort((a,b) => (b.height||0) - (a.height||0))[0];
+            lastBlock = `#${last.height} (${new Date(last.time*1000).toLocaleTimeString()})`;
+          }
+
+          // Effort
+          const effort = statusObj.effort ? (statusObj.effort * 100).toFixed(1) : 'N/A';
+
+          // Payments: balances, generate, immature, paid
+          const balances = p.balances || {};
+          const generate = p.generate || {};
+          const immature = p.immature || {};
+          const paid = p.paid || {};
+          // Sum all balances (across all miners)
+          const totalBalance = Object.values(balances).reduce((a,b) => a + b, 0) +
+                               Object.values(generate).reduce((a,b) => a + b, 0) +
+                               Object.values(immature).reduce((a,b) => a + b, 0);
+          const totalPaid = Object.values(paid).reduce((a,b) => a + b, 0);
+
+          // Format with 8 decimals
+          const pendingBalance = totalBalance ? totalBalance.toFixed(8) : '0';
+          const paidTotal = totalPaid ? totalPaid.toFixed(8) : '0';
+
           html += `<tr>
-            <td><strong>${result.pool}</strong></td>
+            <td><strong>${r.pool}</strong></td>
             <td class="hashrate">${totalHash.toFixed(2)}</td>
             <td>${statusObj.miners || 0}</td>
             <td>${statusObj.workers || 0}</td>
             <td>${blocks.valid || 0}</td>
+            <td>${pendingCount}</td>
+            <td>${shares.valid||0} / ${shares.stale||0} / ${shares.invalid||0}</td>
             <td>${typeof network.difficulty === 'number' ? network.difficulty.toFixed(2) : network.difficulty}</td>
             <td>${network.height || 'N/A'}</td>
+            <td>${reward}</td>
+            <td>${fee}</td>
+            <td>${paymentInterval}</td>
+            <td>${lastBlock}</td>
+            <td>${effort}</td>
+            <td>${pendingBalance}</td>
+            <td>${paidTotal}</td>
           </tr>`;
           hasData = true;
         }
@@ -231,15 +353,14 @@ SERVEOF
       }
     }
 
-    // Auto‑refresh every 30 seconds
     fetchData();
-    setInterval(fetchData, 30000);
+    setInterval(fetchData, REFRESH_INTERVAL);
+    document.getElementById('intervalDisplay').textContent = REFRESH_INTERVAL / 1000;
   </script>
 </body>
 </html>
 HTMLEOF
 
-  # Write a simple package.json (only express as dependency)
   cat > package.json << 'PKGEOF'
 {
   "name": "foundation-mining-dashboard",
@@ -261,7 +382,8 @@ PKGEOF
   show_url
   echo ""
   log_info "Dashboard ready – open your browser."
-  log_info "The page shows all pools in a single table and auto‑refreshes every 30 seconds."
+  log_info "Now showing: all previous stats plus 'Pending Balance' and 'Total Paid' from payments endpoint."
+  log_info "Auto‑refresh interval: 60 seconds (change REFRESH_INTERVAL in public/index.html)."
 }
 
 main
