@@ -1,6 +1,6 @@
 #!/bin/bash
-# frontend-setup.sh – creates and runs the Foundation Mining Dashboard
-# Usage: ./frontend-setup.sh [--clean]
+# frontend-simple.sh – creates and runs a simple pool dashboard
+# Usage: ./frontend-simple.sh [--clean]
 
 set -euo pipefail
 
@@ -64,14 +64,12 @@ start_dashboard() {
 }
 
 show_url() {
-  # Get the primary IP address (non-loopback)
   IP=$(hostname -I | awk '{print $1}')
   if [ -z "$IP" ]; then
     IP="localhost"
   fi
   echo ""
   log_info "Dashboard: http://$IP:8080"
-  log_info "Also available at: http://localhost:8080 (only from this machine)"
 }
 
 main() {
@@ -91,15 +89,157 @@ main() {
   install_nodejs18
 
   log_info "Creating dashboard at $DASHBOARD_DIR"
-  mkdir -p "$DASHBOARD_DIR"/{public/{css,js/utils},tests}
+  mkdir -p "$DASHBOARD_DIR"/public
   cd "$DASHBOARD_DIR"
 
-  cat > .env << 'EOF'
-API_BASE_URL=http://localhost:3001/api/v1
-REFRESH_INTERVAL=30000
-PORT=8080
-EOF
+  # Simple server.js – serves static files and a health endpoint
+  cat > server.js << 'SERVEOF'
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+const port = 8080;
+
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Health check
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Dashboard running on port ${port}`);
+});
+SERVEOF
+
+  # The main HTML page – fetches all pools and displays stats
+  cat > public/index.html << 'HTMLEOF'
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mining Pool Dashboard</title>
+  <style>
+    body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #00ff41; padding: 20px; }
+    h1 { text-shadow: 0 0 10px #00ff41; border-bottom: 2px solid #00ff41; padding-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #00ff41; padding: 8px 12px; text-align: left; }
+    th { background: #1a1a1a; text-transform: uppercase; letter-spacing: 2px; }
+    tr:nth-child(even) { background: #0a0a0a; }
+    tr:hover { background: #1a2a1a; }
+    .hashrate { color: #2ecc71; }
+    .error { color: #ff4444; }
+    .footer { margin-top: 20px; font-size: 0.8rem; color: #666; }
+    .refresh { cursor: pointer; color: #00ff41; text-decoration: underline; }
+    .refresh:hover { color: #fff; }
+    .status { margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h1>⚡ Foundation Pool Dashboard</h1>
+  <div id="status" class="status">Loading pool list…</div>
+  <div id="content"></div>
+  <div class="footer">
+    Auto‑refresh every 30 seconds &nbsp;|&nbsp; <span class="refresh" onclick="fetchData()">⟳ Refresh now</span>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:3001/api/v1';
+
+    async function fetchData() {
+      const status = document.getElementById('status');
+      const content = document.getElementById('content');
+      status.textContent = 'Fetching pool list…';
+      content.innerHTML = '';
+
+      try {
+        // 1. Get pool list
+        const poolRes = await fetch(`${API_BASE}/pools`);
+        if (!poolRes.ok) throw new Error(`HTTP ${poolRes.status} – ${poolRes.statusText}`);
+        const pools = await poolRes.json();
+        if (!Array.isArray(pools) || pools.length === 0) {
+          status.textContent = '⚠️ No pools found.';
+          content.innerHTML = '<p>No pools are defined on the backend.</p>';
+          return;
+        }
+
+        status.textContent = `Fetching data for ${pools.length} pool(s)…`;
+
+        // 2. Fetch stats for each pool
+        const statsPromises = pools.map(async (pool) => {
+          try {
+            const res = await fetch(`${API_BASE}/${pool}/`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            return { pool, data: data.primary || data.body?.primary || {} };
+          } catch (err) {
+            return { pool, error: err.message };
+          }
+        });
+
+        const results = await Promise.all(statsPromises);
+
+        // 3. Build table
+        let html = `<table>
+          <thead>
+            <tr>
+              <th>Pool</th>
+              <th>Hashrate (MH/s)</th>
+              <th>Miners</th>
+              <th>Workers</th>
+              <th>Valid Blocks</th>
+              <th>Network Difficulty</th>
+              <th>Block Height</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+        let hasData = false;
+        for (const result of results) {
+          if (result.error) {
+            html += `<tr><td>${result.pool}</td><td colspan="6" class="error">⚠️ ${result.error}</td></tr>`;
+            continue;
+          }
+          const p = result.data;
+          const hashrate = p.hashrate || { shared: 0, solo: 0 };
+          const totalHash = (hashrate.shared || 0) + (hashrate.solo || 0);
+          const blocks = p.blocks || { valid: 0 };
+          const network = p.network || { difficulty: 'N/A', height: 'N/A' };
+          const statusObj = p.status || { miners: 0, workers: 0 };
+          html += `<tr>
+            <td><strong>${result.pool}</strong></td>
+            <td class="hashrate">${totalHash.toFixed(2)}</td>
+            <td>${statusObj.miners || 0}</td>
+            <td>${statusObj.workers || 0}</td>
+            <td>${blocks.valid || 0}</td>
+            <td>${typeof network.difficulty === 'number' ? network.difficulty.toFixed(2) : network.difficulty}</td>
+            <td>${network.height || 'N/A'}</td>
+          </tr>`;
+          hasData = true;
+        }
+
+        html += `</tbody></table>`;
+        if (!hasData) html = '<p>No pool data received.</p>';
+        content.innerHTML = html;
+        status.textContent = `✅ Updated at ${new Date().toLocaleTimeString()} (${pools.length} pools)`;
+      } catch (err) {
+        status.textContent = `❌ Error: ${err.message}`;
+        content.innerHTML = `<p class="error">Failed to load data. Please check the backend.</p>`;
+        console.error(err);
+      }
+    }
+
+    // Auto‑refresh every 30 seconds
+    fetchData();
+    setInterval(fetchData, 30000);
+  </script>
+</body>
+</html>
+HTMLEOF
+
+  # Write a simple package.json (only express as dependency)
   cat > package.json << 'PKGEOF'
 {
   "name": "foundation-mining-dashboard",
@@ -108,383 +248,10 @@ EOF
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "dependencies": {
-    "compression": "^1.7.4",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "helmet": "^7.1.0",
-    "morgan": "^1.10.0"
+    "express": "^4.18.2"
   }
 }
 PKGEOF
-
-  cat > server.js << 'SERVEOF'
-import express from 'express';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import compression from 'compression';
-import helmet from 'helmet';
-import morgan from 'morgan';
-import dotenv from 'dotenv';
-
-dotenv.config();
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
-const port = process.env.PORT || 8080;
-const apiBaseUrl = process.env.API_BASE_URL || 'http://localhost:3001/api/v1';
-const refreshInterval = parseInt(process.env.REFRESH_INTERVAL) || 30000;
-
-app.use(compression());
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      connectSrc: ["'self'", apiBaseUrl.replace(/\/api\/v1.*$/, '')],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"]
-    }
-  }
-}));
-app.use(morgan('combined'));
-app.use((req, res, next) => {
-  res.locals.env = { API_BASE_URL: apiBaseUrl, REFRESH_INTERVAL: refreshInterval };
-  next();
-});
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1y', immutable: true }));
-
-app.get('/', (req, res) => {
-  const envScript = `<script>window.__env = ${JSON.stringify(res.locals.env)};</script>`;
-  const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mining Pool Dashboard</title>
-  <link rel="stylesheet" href="/css/style.css">
-  ${envScript}
-</head>
-<body>
-  <div id="app">
-    <header class="header">
-      <h1>⚡ Foundation Mining Pool</h1>
-      <div class="pool-selector-wrapper">
-        <label for="pool-selector">Pool:</label>
-        <select id="pool-selector"></select>
-        <input type="text" id="manual-pool" placeholder="Or type pool name" style="display:none; background: var(--secondary); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem;">
-        <button id="manual-go" style="display:none; background: var(--accent); color: white; border: none; padding: 0.4rem 1rem; border-radius: var(--border-radius); cursor: pointer;">Go</button>
-      </div>
-    </header>
-    <section class="stats-grid" id="stats"></section>
-    <div class="search-container">
-      <input type="text" id="search" placeholder="Search miners by address..." aria-label="Search miners">
-    </div>
-    <div id="loader" class="loader">Loading data…</div>
-    <div id="error" class="error" style="display:none;">
-      <p>⚠️ Failed to load data.</p>
-      <button onclick="window.retryFetch()" class="retry-button">Retry</button>
-    </div>
-    <div id="skeleton" class="skeleton-grid">
-      <div class="skeleton-card" role="status" aria-live="polite"></div>
-      <div class="skeleton-card"></div>
-      <div class="skeleton-card"></div>
-      <div class="skeleton-card"></div>
-      <div class="skeleton-card"></div>
-      <div class="skeleton-card"></div>
-    </div>
-    <div id="miners-grid" class="grid" role="region" aria-live="polite"></div>
-    <div id="blocks-container">
-      <h2>Recent Blocks</h2>
-      <div id="blocks-list" class="blocks-list"></div>
-    </div>
-    <div id="status" role="status" aria-live="polite" class="sr-only"></div>
-  </div>
-  <script src="/js/app.js"></script>
-</body>
-</html>`;
-  res.send(html);
-});
-
-app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
-
-// Bind to all interfaces (0.0.0.0) so it's accessible from other devices
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Dashboard running on port ${port}`);
-});
-SERVEOF
-
-  cat > public/css/style.css << 'CSSEOF'
-:root { --primary: #1a1a2e; --secondary: #16213e; --accent: #0f3460; --highlight: #e94560; --success: #2ecc71; --warning: #f1c40f; --danger: #e74c3c; --text: #eee; --card-bg: #1e2a4a; --border-radius: 8px; --shadow: 0 4px 12px rgba(0,0,0,0.3); }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--primary); color: var(--text); padding: 1rem; line-height: 1.6; }
-.header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 1rem 0; border-bottom: 2px solid var(--accent); margin-bottom: 2rem; }
-.header h1 { font-size: 1.8rem; color: var(--highlight); }
-.pool-selector-wrapper { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-.pool-selector-wrapper select, .pool-selector-wrapper input, .pool-selector-wrapper button { background: var(--card-bg); color: var(--text); border: 1px solid var(--accent); padding: 0.4rem 1rem; border-radius: var(--border-radius); font-size: 1rem; }
-.pool-selector-wrapper button { background: var(--accent); color: white; cursor: pointer; border: none; }
-.pool-selector-wrapper button:hover { background: var(--highlight); }
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap: 1rem; margin-bottom: 2rem; }
-.stat-card { background: var(--card-bg); padding: 1rem; border-radius: var(--border-radius); text-align: center; box-shadow: var(--shadow); }
-.stat-card span { display: block; font-size: 0.8rem; text-transform: uppercase; color: #aaa; letter-spacing: 0.5px; }
-.stat-card strong { display: block; font-size: 1.6rem; margin-top: 0.2rem; }
-.search-container { text-align: center; margin-bottom: 1.5rem; }
-#search { width: min(100%,500px); padding: 0.8rem 1rem; border: 2px solid var(--accent); border-radius: var(--border-radius); background: var(--secondary); color: var(--text); font-size: 1rem; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: 1rem; margin: 1rem 0; }
-.card { background: var(--card-bg); padding: 1.2rem; border-radius: var(--border-radius); box-shadow: var(--shadow); border-left: 4px solid var(--accent); }
-.card h4 { color: var(--highlight); margin-bottom: 0.3rem; word-break: break-all; }
-.card .hashrate { color: var(--success); font-weight: bold; }
-#blocks-container { margin-top: 2rem; }
-#blocks-container h2 { border-bottom: 1px solid var(--accent); padding-bottom: 0.3rem; margin-bottom: 1rem; }
-.blocks-list { display: flex; flex-direction: column; gap: 0.5rem; }
-.block-item { background: var(--card-bg); padding: 0.8rem 1.2rem; border-radius: var(--border-radius); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; }
-.block-item .height { color: var(--highlight); font-weight: bold; }
-.block-item .luck { color: var(--warning); }
-.loader { text-align: center; padding: 2rem; display: none; }
-.error { background: var(--danger); color: white; padding: 1.5rem; border-radius: var(--border-radius); text-align: center; margin: 1rem 0; display: none; }
-.retry-button { margin-top: 0.5rem; padding: 0.5rem 1.5rem; background: white; color: var(--danger); border: none; border-radius: var(--border-radius); font-weight: bold; cursor: pointer; }
-.skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: 1rem; margin: 1rem 0; }
-.skeleton-card { background: var(--card-bg); height: 120px; border-radius: var(--border-radius); opacity: 0.4; overflow: hidden; }
-@keyframes shimmer { 100% { transform: translateX(100%); } }
-.skeleton-card::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.1) 50%, transparent 100%); animation: shimmer 1.6s infinite; }
-@media (max-width: 768px) { .header { flex-direction: column; align-items: stretch; } .stats-grid { grid-template-columns: repeat(2,1fr); } .grid, .skeleton-grid { grid-template-columns: 1fr; } }
-CSSEOF
-
-  cat > public/js/app.js << 'APPEOF'
-const API_BASE = window.__env?.API_BASE_URL || 'http://localhost:3001/api/v1';
-const REFRESH_INTERVAL = window.__env?.REFRESH_INTERVAL || 30000;
-
-const elements = {
-  stats: document.getElementById('stats'),
-  minersGrid: document.getElementById('miners-grid'),
-  blocksList: document.getElementById('blocks-list'),
-  loader: document.getElementById('loader'),
-  error: document.getElementById('error'),
-  search: document.getElementById('search'),
-  skeleton: document.getElementById('skeleton'),
-  status: document.getElementById('status'),
-  poolSelector: document.getElementById('pool-selector'),
-  manualPool: document.getElementById('manual-pool'),
-  manualGo: document.getElementById('manual-go')
-};
-
-let allMiners = [], refreshTimer = null, currentPool = null;
-
-document.addEventListener('DOMContentLoaded', () => {
-  console.log('Dashboard starting, API base:', API_BASE);
-  setupEventListeners();
-  loadPoolList();
-});
-
-function setupEventListeners() {
-  elements.search.addEventListener('input', debounce(handleSearch, 300));
-  elements.poolSelector.addEventListener('change', (e) => {
-    currentPool = e.target.value;
-    if (currentPool) loadPoolData();
-  });
-  elements.manualGo.addEventListener('click', () => {
-    const val = elements.manualPool.value.trim();
-    if (val) { currentPool = val; loadPoolData(); }
-  });
-  elements.manualPool.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') elements.manualGo.click();
-  });
-}
-
-async function loadPoolList() {
-  try {
-    const url = `${API_BASE}/pools`;
-    console.log('Fetching pool list from:', url);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    const pools = await res.json();
-    console.log('Pools received:', pools);
-
-    const select = elements.poolSelector;
-    select.innerHTML = '';
-    if (!Array.isArray(pools) || pools.length === 0) {
-      select.innerHTML = '<option value="">No pools</option>';
-      showManualInput('No pools found from backend.');
-      return;
-    }
-    // Hide manual input if pools exist
-    elements.manualPool.style.display = 'none';
-    elements.manualGo.style.display = 'none';
-
-    pools.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p;
-      opt.textContent = p;
-      select.appendChild(opt);
-    });
-    currentPool = pools[0];
-    select.value = currentPool;
-    loadPoolData();
-    scheduleAutoRefresh();
-  } catch (err) {
-    console.error('Pool list error:', err);
-    showError('Could not fetch pool list: ' + err.message);
-    showManualInput('Enter pool name manually');
-  }
-}
-
-function showManualInput(placeholder) {
-  elements.manualPool.style.display = 'inline-block';
-  elements.manualGo.style.display = 'inline-block';
-  elements.manualPool.placeholder = placeholder || 'Enter pool name';
-}
-
-async function loadPoolData() {
-  if (!currentPool) return;
-  showLoading();
-  const pool = currentPool;
-  const statsUrl = `${API_BASE}/${pool}/`;
-  const minersUrl = `${API_BASE}/${pool}/miners?method=active`;
-  const blocksUrl = `${API_BASE}/${pool}/blocks`;
-
-  console.log('Stats:', statsUrl);
-  console.log('Miners:', minersUrl);
-  console.log('Blocks:', blocksUrl);
-
-  try {
-    const [statsRes, minersRes, blocksRes] = await Promise.all([
-      fetchWithCache(statsUrl),
-      fetchWithCache(minersUrl),
-      fetchWithCache(blocksUrl)
-    ]);
-
-    const statsData = statsRes.body || statsRes;
-    const minersData = minersRes.body || minersRes;
-    const blocksData = blocksRes.body || blocksRes;
-
-    displayStats(statsData);
-    allMiners = flattenMiners(minersData);
-    displayMiners(allMiners);
-    displayBlocks(blocksData);
-    hideLoading();
-    announce(`Updated: ${pool}`);
-  } catch (err) {
-    console.error('Data error:', err);
-    showError(err.message);
-  }
-}
-
-async function fetchWithCache(url) {
-  const cached = getCachedData(url, REFRESH_INTERVAL);
-  if (cached) return cached;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status} – ${res.statusText} (url: ${url})`);
-  const data = await res.json();
-  setCachedData(url, data);
-  return data;
-}
-
-function displayStats(data) {
-  const p = data.primary || {};
-  const blocks = p.blocks || { valid:0 };
-  const network = p.network || { difficulty:0, hashrate:0, height:0 };
-  const hashrate = p.hashrate || { shared:0, solo:0 };
-  const status = p.status || { miners:0, workers:0 };
-  elements.stats.innerHTML = `
-    <div class="stat-card"><span>Total Hashrate</span><strong>${(hashrate.shared+hashrate.solo).toFixed(2)} MH/s</strong></div>
-    <div class="stat-card"><span>Miners</span><strong>${status.miners}</strong></div>
-    <div class="stat-card"><span>Workers</span><strong>${status.workers}</strong></div>
-    <div class="stat-card"><span>Valid Blocks</span><strong>${blocks.valid}</strong></div>
-    <div class="stat-card"><span>Network Diff</span><strong>${network.difficulty?.toFixed(2)||'N/A'}</strong></div>
-    <div class="stat-card"><span>Block Height</span><strong>${network.height||'N/A'}</strong></div>
-  `;
-}
-
-function flattenMiners(data) {
-  const p = data.primary || {};
-  return [...(p.shared||[]), ...(p.solo||[])];
-}
-
-function displayMiners(miners) {
-  if (!miners || miners.length===0) {
-    elements.minersGrid.innerHTML = '<p>No active miners</p>';
-    return;
-  }
-  const sorted = [...miners].sort((a,b)=>(b.hashrate||0)-(a.hashrate||0));
-  const html = sorted.slice(0,100).map(m => `
-    <div class="card">
-      <h4>${m.miner}</h4>
-      <p class="hashrate">⚡ ${(m.hashrate||0).toFixed(2)} MH/s</p>
-      <p>Shares: V:${m.shares?.valid||0} I:${m.shares?.invalid||0} S:${m.shares?.stale||0}</p>
-      <p>Work: ${(m.work||0).toFixed(2)}</p>
-    </div>
-  `).join('');
-  elements.minersGrid.innerHTML = html;
-}
-
-function displayBlocks(data) {
-  const p = data.primary || {};
-  const all = [...(p.pending||[]), ...(p.confirmed||[])]
-    .sort((a,b)=>(b.height||0)-(a.height||0))
-    .slice(0,20);
-  if (all.length===0) { elements.blocksList.innerHTML = '<p>No blocks</p>'; return; }
-  const html = all.map(b => `
-    <div class="block-item">
-      <span class="height">#${b.height}</span>
-      <span>${b.hash?.slice(0,12)||''}…</span>
-      <span>💰 ${b.reward?.toFixed(4)||'N/A'}</span>
-      <span class="luck">Luck: ${(b.luck||0).toFixed(1)}%</span>
-      <span>${b.worker||'unknown'}</span>
-    </div>
-  `).join('');
-  elements.blocksList.innerHTML = html;
-}
-
-function handleSearch(e) {
-  const term = e.target.value.toLowerCase().trim();
-  if (!term) { displayMiners(allMiners); return; }
-  const filtered = allMiners.filter(m => m.miner.toLowerCase().includes(term));
-  displayMiners(filtered);
-  announce(`Found ${filtered.length} miners`);
-}
-
-function scheduleAutoRefresh() {
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => loadPoolData().catch(console.warn), REFRESH_INTERVAL);
-}
-
-function showLoading() {
-  elements.loader.style.display = 'block';
-  elements.error.style.display = 'none';
-  elements.skeleton.style.display = 'grid';
-  elements.minersGrid.innerHTML = '';
-}
-function hideLoading() {
-  elements.loader.style.display = 'none';
-  elements.skeleton.style.display = 'none';
-}
-function showError(msg) {
-  elements.error.style.display = 'block';
-  elements.error.querySelector('p').textContent = '⚠️ ' + msg;
-  elements.loader.style.display = 'none';
-  elements.skeleton.style.display = 'none';
-}
-function announce(msg) {
-  elements.status.textContent = msg;
-  clearTimeout(window._statusTimeout);
-  window._statusTimeout = setTimeout(() => elements.status.textContent = '', 5000);
-}
-window.retryFetch = function() { loadPoolData(); };
-
-function debounce(fn, delay) {
-  let timer;
-  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), delay); };
-}
-function getCachedData(key, ttl) {
-  const item = localStorage.getItem(key);
-  if (!item) return null;
-  try {
-    const { timestamp, data } = JSON.parse(item);
-    return (Date.now() - timestamp) < ttl ? data : null;
-  } catch { return null; }
-}
-function setCachedData(key, data) {
-  localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), data }));
-}
-APPEOF
 
   log_info "Installing npm dependencies (using isolated Node.js 18)..."
   $NODE_INSTALL_DIR/bin/node $NODE_INSTALL_DIR/bin/npm install
@@ -494,7 +261,7 @@ APPEOF
   show_url
   echo ""
   log_info "Dashboard ready – open your browser."
-  log_info "Check console (F12) for debug logs."
+  log_info "The page shows all pools in a single table and auto‑refreshes every 30 seconds."
 }
 
 main
