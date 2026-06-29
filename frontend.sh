@@ -33,7 +33,6 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; exit 1; }
 clean_old_installation() {
   log_info "Performing clean installation..."
 
-  # Stop PM2 process if it exists
   if command -v pm2 &> /dev/null; then
     if pm2 list | grep -q "mining-dashboard"; then
       log_info "Stopping PM2 process: mining-dashboard"
@@ -42,13 +41,11 @@ clean_old_installation() {
     fi
   fi
 
-  # Kill any node process running server.js from the dashboard directory
   if [ -d "$DASHBOARD_DIR" ]; then
     log_info "Killing any node processes running from $DASHBOARD_DIR"
     pkill -f "node.*$DASHBOARD_DIR.*server.js" 2>/dev/null || true
   fi
 
-  # Remove the dashboard directory
   if [ -d "$DASHBOARD_DIR" ]; then
     log_info "Removing old dashboard directory: $DASHBOARD_DIR"
     rm -rf "$DASHBOARD_DIR"
@@ -56,7 +53,6 @@ clean_old_installation() {
     log_info "No existing dashboard directory found."
   fi
 
-  # Remove isolated Node.js 18 if it exists (we'll reinstall it)
   if [ -d "$NODE_INSTALL_DIR" ]; then
     log_info "Removing isolated Node.js 18 installation: $NODE_INSTALL_DIR"
     sudo rm -rf "$NODE_INSTALL_DIR"
@@ -128,11 +124,10 @@ show_url() {
 
 # ---------- Main ----------
 main() {
-    # If clean install flag is set, clean everything first
+    # Clean install if requested
     if [ "$CLEAN_INSTALL" = true ]; then
         clean_old_installation
     else
-        # Ask the user if they want to remove existing installation
         if [ -d "$DASHBOARD_DIR" ]; then
             echo ""
             log_warn "Existing dashboard directory found: $DASHBOARD_DIR"
@@ -152,7 +147,7 @@ main() {
     mkdir -p "$DASHBOARD_DIR"/{public/{css,js/utils},tests}
     cd "$DASHBOARD_DIR"
 
-    # .env – use relative API path, the proxy will handle it
+    # .env
     cat > .env << EOF
 API_BASE_URL=$API_BASE_URL
 DEFAULT_POOL=$DEFAULT_POOL
@@ -211,17 +206,34 @@ const defaultPool = process.env.DEFAULT_POOL || 'XRO';
 const refreshInterval = parseInt(process.env.REFRESH_INTERVAL) || 30000;
 
 // ----- Proxy API requests to backend -----
+// All /api/* requests go to the backend on port 3001
 app.use('/api', createProxyMiddleware({
   target: apiBaseUrl,
   changeOrigin: true,
-  pathRewrite: { '^/api': '/api' }, // keep /api
+  // No pathRewrite – we want to keep /api exactly as is
   logLevel: 'debug',
+  onError: (err, req, res) => {
+    console.error('Proxy error:', err.message);
+    res.status(502).json({ error: 'Backend unreachable', details: err.message });
+  },
+  onProxyReq: (proxyReq, req, res) => {
+    console.log(`Proxying: ${req.method} ${req.url} -> ${apiBaseUrl}${req.url}`);
+  },
 }));
 
 app.use(compression());
 app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], connectSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], scriptSrc: ["'self'", "'unsafe-inline'"] } } }));
 app.use(morgan('combined'));
-app.use((req, res, next) => { res.locals.env = { API_BASE_URL: '/api/v1', DEFAULT_POOL: defaultPool, REFRESH_INTERVAL: refreshInterval }; next(); });
+app.use((req, res, next) => {
+  // Pass the pool name and other env vars to the frontend
+  res.locals.env = {
+    API_BASE_URL: '/api/v1',
+    DEFAULT_POOL: defaultPool,
+    REFRESH_INTERVAL: refreshInterval,
+    BACKEND_URL: apiBaseUrl,
+  };
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1y', immutable: true }));
 
 app.get('/', (req, res) => {
@@ -355,7 +367,6 @@ function setupEventListeners() {
 async function loadPoolData() {
   showLoading();
   const pool = DEFAULT_POOL;
-  // --- FIXED: use root endpoint for stats, not /statistics ---
   const statsUrl = `${API_BASE}/${pool}/`;
   const minersUrl = `${API_BASE}/${pool}/miners?method=active`;
   const blocksUrl = `${API_BASE}/${pool}/blocks`;
@@ -375,7 +386,6 @@ async function loadPoolData() {
     console.log('Miners response:', minersRes);
     console.log('Blocks response:', blocksRes);
 
-    // Both structures are supported
     const statsData = statsRes.body || statsRes;
     const minersData = minersRes.body || minersRes;
     const blocksData = blocksRes.body || blocksRes;
